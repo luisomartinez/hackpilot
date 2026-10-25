@@ -3301,13 +3301,16 @@ class EnterprisePentestingPhases:
                 "created_at": str(session_record.created_at) if session_record else "Unknown",
                 "vulnerabilities": [
                     {
+                        "id": v.id,
                         "title": v.title,
                         "severity": v.severity,
+                        "target": v.proof_of_concept,
                         "description": v.description,
                         "remediation": v.remediation,
                         "cvss_score": v.cvss_score,
                         "cvss_vector": v.cvss_vector,
                         "sources": v.sources,
+                        "validated": v.validated,
                         "confidence": v.confidence,
                         "evidence": v.evidence,
                     }
@@ -3318,6 +3321,33 @@ class EnterprisePentestingPhases:
                     for p in phase_results
                 ],
             }
+
+            # Sprint 3.5: local-only AI triage + attack-chain narrative,
+            # off by default (USE_AI). ai_engine.triage/attack_narrative
+            # both no-op cleanly when disabled or Ollama is unreachable -
+            # never call anything but a local Ollama instance.
+            try:
+                from ai_engine.triage import triage_findings
+                triage_results = triage_findings(session_data["vulnerabilities"])
+                if triage_results:
+                    self.db.save_ai_context(self.session_id, "triage", {"results": triage_results})
+                    session_data["triage"] = triage_results
+            except Exception as e:
+                logger.warning("AI triage failed: %s", e)
+
+            try:
+                from ai_engine.attack_narrative import generate_attack_narrative, save_attack_narrative
+                narrative = generate_attack_narrative(session_data["vulnerabilities"])
+                if narrative:
+                    narrative_path = save_attack_narrative(narrative)
+                    self.db.save_ai_context(
+                        self.session_id, "attack_chain_narrative",
+                        {"narrative": narrative, "path": narrative_path},
+                    )
+                    session_data["attack_chain_narrative"] = narrative
+            except Exception as e:
+                logger.warning("AI attack narrative generation failed: %s", e)
+
             if self.report_generator:
                 try:
                     report_text = self.report_generator.generate_technical_report(session_data)
@@ -3677,13 +3707,16 @@ class EnterpriseWebDashboard:
                     "scope": session_obj.scope,
                     "created_at": session_obj.created_at.isoformat() if session_obj.created_at else "",
                     "vulnerabilities": [{
+                        "id": v.id,
                         "title": v.title,
                         "severity": v.severity,
+                        "target": v.proof_of_concept,
                         "description": v.description,
                         "remediation": v.remediation,
                         "cvss_score": v.cvss_score,
                         "cvss_vector": v.cvss_vector,
                         "sources": v.sources,
+                        "validated": v.validated,
                         "confidence": v.confidence,
                         "evidence": v.evidence,
                     } for v in vulns],

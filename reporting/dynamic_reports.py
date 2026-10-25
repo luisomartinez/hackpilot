@@ -642,6 +642,10 @@ class DynamicReportGenerator:
                 insights, trends
             ),
             "annexes": self._build_annexes(sessions),
+            "attack_chain_narrative": next(
+                (s["attack_chain_narrative"] for s in sessions if s.get("attack_chain_narrative")),
+                None,
+            ),
         }
 
         return executive_report
@@ -923,6 +927,7 @@ class DynamicReportGenerator:
                 key_findings=report_data.get("key_findings", []),
                 recommendations=report_data.get("recommendations", []),
                 annexes=report_data.get("annexes", {}),
+                attack_chain_narrative=report_data.get("attack_chain_narrative"),
             )
         except Exception as e:
             self.logger.error(f"Error exporting HTML report: {e}")

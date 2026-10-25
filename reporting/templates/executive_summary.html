@@ -83,6 +83,13 @@
         {% endfor %}
     </div>
 
+    {% if attack_chain_narrative %}
+    <div class="summary-box">
+        <h2>Attack Chain Narrative (AI-generated, local model)</h2>
+        <p>{{ attack_chain_narrative | replace('\n', '<br>') | safe }}</p>
+    </div>
+    {% endif %}
+
     {% if annexes %}
     <div class="annex">
         <h2>Annex A &mdash; Tools Executed per Phase</h2>

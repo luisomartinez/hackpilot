@@ -123,6 +123,7 @@ services:
     volumes:
       - ./reports:/app/reports
       - ./evidence:/app/evidence
+      - ./output:/app/output
       - ./logs:/app/logs
     ports:
       - "8080:8080"  # Web Dashboard
