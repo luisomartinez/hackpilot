@@ -48,7 +48,15 @@ class Vulnerability(Base):
     discovered_at = Column(DateTime, default=datetime.utcnow)
     status = Column(String, default='open')  # open, fixed, false_positive, risk_accepted
     ticket_id = Column(String)  # For JIRA integration
-    
+
+    # Multi-source consolidation (exploitation/findings_consolidator.py).
+    # Added in Sprint 1 via an alembic migration - do not alter the live
+    # table by hand, see alembic/versions/*_add_consolidation_columns.py.
+    sources = Column(JSON)  # e.g. ["subfinder", "amass"]
+    validated = Column(Boolean, default=False)  # True once >=2 independent tools agree
+    confidence = Column(String)  # "high" | "medium" | "info"
+    evidence = Column(JSON)  # raw per-source finding payloads kept for the report annexes
+
     # Relationships
     session = relationship("PentestSession", back_populates="vulnerabilities")
     attack_chains = relationship("AttackChain", back_populates="vulnerability")

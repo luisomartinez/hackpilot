@@ -169,8 +169,16 @@ class DatabaseManager:
     def create_vulnerability(self, session_id: str, phase: str, severity: str, title: str,
                            description: str, cvss_score: float = None, cvss_vector: str = None,
                            proof_of_concept: str = None, remediation: str = None,
-                           references: List[str] = None) -> str:
-        """Create a new vulnerability"""
+                           references: List[str] = None, sources: List[str] = None,
+                           validated: bool = False, confidence: str = None,
+                           evidence: Dict[str, Any] = None) -> str:
+        """Create a new vulnerability.
+
+        sources/validated/confidence/evidence are optional and default to
+        "not consolidated" (None/False) - existing callers (nmap/nikto
+        phases, CVE engine, etc.) are unaffected. Only
+        findings_consolidator-produced findings populate them.
+        """
         with self.get_session() as session:
             vulnerability = Vulnerability(
                 session_id=session_id,
@@ -182,7 +190,11 @@ class DatabaseManager:
                 cvss_vector=cvss_vector,
                 proof_of_concept=proof_of_concept,
                 remediation=remediation,
-                references=references or []
+                references=references or [],
+                sources=sources,
+                validated=validated,
+                confidence=confidence,
+                evidence=evidence
             )
             
             session.add(vulnerability)
