@@ -2721,7 +2721,7 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 1: Intelligence Gathering & Reconnaissance",
                 phase_number=1,
                 results={"status": "running"},
-                tools_used=["nmap"]
+                tools_used=["nmap", "subfinder", "amass", "whatweb"]
             )
 
         target = (self.target_info or {}).get("target", "")
@@ -2743,6 +2743,50 @@ class EnterprisePentestingPhases:
                 scan_error = (scan.get("stderr") or "").strip() or "nmap scan failed or nmap is not installed"
         else:
             scan_error = "No target configured or tool manager unavailable"
+
+        # Sprint 1: passive subdomain enumeration + tech fingerprinting,
+        # consolidated across tools. Additive to the nmap scan above - each
+        # tool is isolated in its own try/except so one failing doesn't
+        # take out the others or the phase.
+        subdomains: List[str] = []
+        if self.tool_manager and target:
+            scan_host = _extract_scan_host(target)
+            from exploitation.tools import run_subfinder, run_amass, run_whatweb
+            from exploitation.findings_consolidator import consolidate
+
+            raw_recon_findings = []
+            for runner in (run_subfinder, run_amass):
+                try:
+                    raw_recon_findings.extend(runner(self.tool_manager, scan_host))
+                except Exception as e:
+                    logger.warning("%s failed for %s: %s", runner.__name__, scan_host, e)
+
+            subdomain_findings = consolidate(raw_recon_findings)
+            subdomains = [f["target"] for f in subdomain_findings]
+
+            whatweb_targets = list({scan_host, *subdomains}) if subdomains else [scan_host]
+            try:
+                tech_findings = consolidate(run_whatweb(self.tool_manager, whatweb_targets))
+            except Exception as e:
+                logger.warning("whatweb failed for %s: %s", scan_host, e)
+                tech_findings = []
+
+            if self.db:
+                for finding in subdomain_findings + tech_findings:
+                    self.db.create_vulnerability(
+                        session_id=self.session_id,
+                        phase="reconnaissance",
+                        severity=finding["severity"],
+                        title=finding["title"],
+                        description=f"Reported by: {', '.join(finding['sources'])}.",
+                        proof_of_concept=finding["target"],
+                        remediation="Review whether this asset/technology should be internet-facing; confirm it is in scope.",
+                        cvss_score=0.0,
+                        sources=finding["sources"],
+                        validated=finding["validated"],
+                        confidence=finding["confidence"],
+                        evidence=finding["evidence"],
+                    )
 
         execution_time = time.time() - start_time
 
@@ -2792,6 +2836,7 @@ class EnterprisePentestingPhases:
             "vulnerabilities": [],
             "risk_score": 1.0 if open_ports else 0.0,
             "open_ports": open_ports,
+            "subdomains": subdomains,
         }
         self.results["phase1_reconnaissance"] = result
         return result
@@ -2897,7 +2942,7 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 3: Vulnerability Assessment",
                 phase_number=3,
                 results={"status": "running"},
-                tools_used=["nikto"]
+                tools_used=["nikto", "nuclei", "testssl.sh", "wapiti"]
             )
 
         target = (self.target_info or {}).get("target", "")
@@ -2927,6 +2972,53 @@ class EnterprisePentestingPhases:
                     findings.append(line.lstrip("+ ").strip())
             if not findings:
                 scan_error = (scan.get("stderr") or "").strip() or "nikto completed with no flagged items"
+
+        # Sprint 1: template-based (nuclei), TLS (testssl.sh), and web app
+        # (wapiti) scanning, consolidated across tools. Additive to the
+        # nikto scan above and gated on the same has_web_service signal.
+        # Each tool isolated in its own try/except - one failing doesn't
+        # take out the others or the phase.
+        if target and has_web_service and self.tool_manager:
+            scan_host = _extract_scan_host(target)
+            subdomains = list(self.results.get("phase1_reconnaissance", {}).get("subdomains", []))
+            from exploitation.tools import run_nuclei, run_testssl, run_wapiti, update_nuclei_templates
+            from exploitation.findings_consolidator import consolidate
+
+            wapiti_target = target if "://" in target else f"http://{target}"
+            raw_vuln_findings = []
+
+            try:
+                update_nuclei_templates(self.tool_manager)
+                raw_vuln_findings.extend(run_nuclei(self.tool_manager, list({target, *subdomains})))
+            except Exception as e:
+                logger.warning("nuclei failed for %s: %s", target, e)
+
+            try:
+                raw_vuln_findings.extend(run_testssl(self.tool_manager, scan_host))
+            except Exception as e:
+                logger.warning("testssl.sh failed for %s: %s", scan_host, e)
+
+            try:
+                raw_vuln_findings.extend(run_wapiti(self.tool_manager, wapiti_target))
+            except Exception as e:
+                logger.warning("wapiti failed for %s: %s", wapiti_target, e)
+
+            if self.db:
+                for finding in consolidate(raw_vuln_findings):
+                    self.db.create_vulnerability(
+                        session_id=self.session_id,
+                        phase="assessment",
+                        severity=finding["severity"],
+                        title=finding["title"],
+                        description=f"Reported by: {', '.join(finding['sources'])}.",
+                        proof_of_concept=finding["target"],
+                        remediation="Review manually and confirm exploitability before prioritizing remediation.",
+                        cvss_score=0.0,
+                        sources=finding["sources"],
+                        validated=finding["validated"],
+                        confidence=finding["confidence"],
+                        evidence=finding["evidence"],
+                    )
 
         execution_time = time.time() - start_time
 
