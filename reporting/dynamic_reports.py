@@ -641,9 +641,52 @@ class DynamicReportGenerator:
             "recommendations": self._generate_strategic_recommendations(
                 insights, trends
             ),
+            "annexes": self._build_annexes(sessions),
         }
 
         return executive_report
+
+    def _build_annexes(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Annex A/B/C data for the report template.
+
+        Annex A lists tools used per phase (from PhaseResult.tools_used,
+        correctly scoped per session) rather than literal command-line
+        invocations - this engine doesn't keep a separate, per-session
+        argv log, and threading one through accurately would be a bigger
+        change than this annex warrants.
+        """
+        subdomains = set()
+        raw_excerpts = []
+        phase_tools = []
+
+        for session in sessions:
+            for vuln in session.get("vulnerabilities", []):
+                title = vuln.get("title", "")
+                if title.startswith("Subdomain discovered:"):
+                    subdomains.add(title.replace("Subdomain discovered:", "").strip())
+
+                for source, payload in (vuln.get("evidence") or {}).items():
+                    if not isinstance(payload, dict):
+                        continue
+                    excerpt = payload.get("raw_excerpt") or payload.get("raw")
+                    if excerpt:
+                        raw_excerpts.append({
+                            "source": source,
+                            "title": title,
+                            "excerpt": str(excerpt)[:1500],
+                        })
+
+            for phase in session.get("phase_results", []):
+                phase_tools.append({
+                    "phase_name": phase.get("phase_name", "Unknown phase"),
+                    "tools_used": phase.get("tools_used") or [],
+                })
+
+        return {
+            "phase_tools": phase_tools,
+            "subdomains": sorted(subdomains),
+            "raw_excerpts": raw_excerpts[:10],
+        }
 
     def _generate_executive_insights(
         self, trends: Dict[str, Any], sessions: List[Dict[str, Any]]
@@ -879,6 +922,7 @@ class DynamicReportGenerator:
                 ),
                 key_findings=report_data.get("key_findings", []),
                 recommendations=report_data.get("recommendations", []),
+                annexes=report_data.get("annexes", {}),
             )
         except Exception as e:
             self.logger.error(f"Error exporting HTML report: {e}")

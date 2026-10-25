@@ -3294,6 +3294,7 @@ class EnterprisePentestingPhases:
         if self.db:
             session_record = self.db.get_pentest_session(self.session_id)
             vulnerabilities = self.db.get_vulnerabilities_by_session(self.session_id)
+            phase_results = self.db.get_phase_results(self.session_id)
             session_data = {
                 "target": session_record.target if session_record else self.target_info.get("target", "Unknown"),
                 "scope": session_record.scope if session_record else self.target_info.get("scope", "Unknown"),
@@ -3304,8 +3305,17 @@ class EnterprisePentestingPhases:
                         "severity": v.severity,
                         "description": v.description,
                         "remediation": v.remediation,
+                        "cvss_score": v.cvss_score,
+                        "cvss_vector": v.cvss_vector,
+                        "sources": v.sources,
+                        "confidence": v.confidence,
+                        "evidence": v.evidence,
                     }
                     for v in vulnerabilities
+                ],
+                "phase_results": [
+                    {"phase_name": p.phase_name, "tools_used": p.tools_used}
+                    for p in phase_results
                 ],
             }
             if self.report_generator:
@@ -3327,6 +3337,11 @@ class EnterprisePentestingPhases:
                 reports_dir.mkdir(exist_ok=True)
                 report_path = reports_dir / f"{self.session_id}_technical_report.txt"
                 written_path = write_report_text(report_path, report_text)
+                # Sidecar checksum of the plaintext report content, for
+                # integrity verification regardless of whether the report
+                # itself was encrypted at rest.
+                report_sha256 = hashlib.sha256(report_text.encode("utf-8")).hexdigest()
+                Path(f"{report_path}.sha256").write_text(report_sha256 + "\n", encoding="utf-8")
 
                 self.db.create_vulnerability(
                     session_id=self.session_id,
@@ -3656,6 +3671,7 @@ class EnterpriseWebDashboard:
                     return jsonify({"error": "Session not found"}), 404
 
                 vulns = self.hackpilot.db.get_vulnerabilities_by_session(session_id)
+                phase_results = self.hackpilot.db.get_phase_results(session_id)
                 session_data = {
                     "target": session_obj.target,
                     "scope": session_obj.scope,
@@ -3666,7 +3682,15 @@ class EnterpriseWebDashboard:
                         "description": v.description,
                         "remediation": v.remediation,
                         "cvss_score": v.cvss_score,
+                        "cvss_vector": v.cvss_vector,
+                        "sources": v.sources,
+                        "confidence": v.confidence,
+                        "evidence": v.evidence,
                     } for v in vulns],
+                    "phase_results": [{
+                        "phase_name": p.phase_name,
+                        "tools_used": p.tools_used,
+                    } for p in phase_results],
                 }
 
                 report_data = self.hackpilot.report_generator.generate_executive_report([session_data])
@@ -3699,8 +3723,16 @@ class EnterpriseWebDashboard:
                     # transparently in memory either way.
                     from security.report_crypto import read_report_file
                     content = read_report_file(output_path)
+                    # SHA256 of the plaintext PDF this response carries, so the
+                    # recipient can verify integrity without a separate sidecar
+                    # file (this PDF is generated on demand and deleted right
+                    # after serving - there's no standing file to ship one next to).
+                    report_sha256 = hashlib.sha256(content).hexdigest()
                     return Response(content, mimetype='application/pdf',
-                                     headers={"Content-Disposition": f"attachment; filename={filename}.pdf"})
+                                     headers={
+                                         "Content-Disposition": f"attachment; filename={filename}.pdf",
+                                         "X-Report-SHA256": report_sha256,
+                                     })
                 finally:
                     if os.path.exists(output_path):
                         os.remove(output_path)

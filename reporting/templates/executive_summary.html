@@ -21,8 +21,15 @@
         .chart-container img { max-width: 100%; height: auto; border-radius: 8px; }
         .recommendation { background: #e8f5e8; border-left: 4px solid #137333; 
                          padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }
-        .finding { background: #fff3cd; border-left: 4px solid #f9ab00; 
+        .finding { background: #fff3cd; border-left: 4px solid #f9ab00;
                   padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }
+        .annex { background: white; padding: 25px; border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin: 20px 0; }
+        .annex table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+        .annex th, .annex td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+        .annex th { background: #f1f3f4; color: #5f6368; }
+        .annex pre { background: #f1f3f4; padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; font-size: 0.8em; }
+        .checksum-note { color: #5f6368; font-size: 0.85em; margin-top: 30px; border-top: 1px solid #e0e0e0; padding-top: 10px; }
     </style>
 </head>
 <body>
@@ -75,6 +82,54 @@
         </div>
         {% endfor %}
     </div>
+
+    {% if annexes %}
+    <div class="annex">
+        <h2>Annex A &mdash; Tools Executed per Phase</h2>
+        {% if annexes.phase_tools %}
+        <table>
+            <tr><th>Phase</th><th>Tools used</th></tr>
+            {% for phase in annexes.phase_tools %}
+            <tr><td>{{ phase.phase_name }}</td><td>{{ phase.tools_used|join(', ') }}</td></tr>
+            {% endfor %}
+        </table>
+        {% else %}
+        <p>No phase execution data available for this session.</p>
+        {% endif %}
+    </div>
+
+    <div class="annex">
+        <h2>Annex B &mdash; Subdomains Discovered</h2>
+        {% if annexes.subdomains %}
+        <table>
+            <tr><th>Subdomain</th></tr>
+            {% for subdomain in annexes.subdomains %}
+            <tr><td>{{ subdomain }}</td></tr>
+            {% endfor %}
+        </table>
+        {% else %}
+        <p>No subdomains were discovered for this session.</p>
+        {% endif %}
+    </div>
+
+    <div class="annex">
+        <h2>Annex C &mdash; Raw Tool Output Excerpts</h2>
+        {% if annexes.raw_excerpts %}
+        {% for item in annexes.raw_excerpts %}
+        <p><strong>{{ item.source }}</strong> &mdash; {{ item.title }}</p>
+        <pre>{{ item.excerpt }}</pre>
+        {% endfor %}
+        {% else %}
+        <p>No raw output excerpts were retained for this session.</p>
+        {% endif %}
+        <p class="checksum-note">
+            This report's SHA256 checksum is provided via the download API's
+            <code>X-Report-SHA256</code> response header (or the accompanying
+            <code>.sha256</code> sidecar file for the standing technical report
+            under <code>reports/</code>), not printed inline here - the hash of
+            a PDF cannot describe its own rendered bytes without a second pass.
+        </p>
+    </div>
+    {% endif %}
 </body>
 </html>
-        
