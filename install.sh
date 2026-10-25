@@ -189,6 +189,13 @@ for tool in binwalk foremost steghide "$EXIFTOOL_PKG" tcpdump ncat socat proxych
     install_tool "$tool"
 done
 
+# Sprint 1 recon/vuln tools (exploitation/tools/*). All ship as apt packages
+# on current Kali; whatweb is already in the first loop above.
+echo "[+] Installing Sprint 1 recon/vuln tools..."
+for tool in subfinder amass nuclei testssl.sh wapiti; do
+    install_tool "$tool"
+done
+
 # Local-model provisioning is a user-controlled host action. Baking a daemon and a
 # multi-GB model download into the image build is non-deterministic and makes offline
 # image builds impossible. The Workbench remains usable in deterministic no-AI mode.
