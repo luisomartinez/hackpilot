@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Union, Callable
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
+from urllib.parse import urlparse
 import weakref
 
 try:
@@ -592,9 +593,19 @@ def get_cache_manager() -> CacheManager:
         l2_cache = None
         if REDIS_AVAILABLE:
             try:
-                redis_host = os.getenv("REDIS_HOST", "localhost")
-                redis_port = int(os.getenv("REDIS_PORT", "6379"))
-                redis_password = os.getenv("REDIS_PASSWORD")
+                redis_url = os.getenv("REDIS_URL")
+                if redis_url:
+                    # REDIS_URL (set by docker-compose) takes precedence over the
+                    # discrete REDIS_HOST/PORT/PASSWORD vars, which default to
+                    # localhost and are wrong when Redis runs in another container.
+                    parsed = urlparse(redis_url)
+                    redis_host = parsed.hostname or "localhost"
+                    redis_port = parsed.port or 6379
+                    redis_password = parsed.password or os.getenv("REDIS_PASSWORD")
+                else:
+                    redis_host = os.getenv("REDIS_HOST", "localhost")
+                    redis_port = int(os.getenv("REDIS_PORT", "6379"))
+                    redis_password = os.getenv("REDIS_PASSWORD")
 
                 l2_cache = RedisCache(
                     host=redis_host,

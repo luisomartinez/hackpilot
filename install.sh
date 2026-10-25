@@ -103,7 +103,7 @@ if [ -L "/usr/bin/cc" ] && ! /usr/bin/cc --version >/dev/null 2>&1; then
 fi
 
 echo "[+] Updating system packages..."
-run_root apt-get update
+run_root apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=15 update
 if [ "$INSTALL_CONTEXT" = "host" ]; then
     run_root apt-get upgrade -y
 else
@@ -138,27 +138,46 @@ else
     info "Container install: Python dependencies are provided by the Docker requirements layer"
 fi
 
-# Install available pentesting tools (skip unavailable ones)
+# Install one apt package, retrying with fresh apt-get invocations (not just
+# apt's internal --Retries, which keeps reconnecting to the SAME already-
+# resolved mirror). Kali's CDN redirector occasionally hands a single file
+# to a dead backend (seen repeatedly: mirror.us.cdn-perfprod.com); a brand
+# new apt-get process re-resolves the redirector and usually lands on a
+# different, reachable mirror.
+install_tool() {
+    tool="$1"
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        if run_root apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=15 install -y "$tool"; then
+            return 0
+        fi
+        warn "Tool '$tool' install attempt $attempt/3 failed, retrying..."
+        attempt=$((attempt + 1))
+    done
+    warn "Tool '$tool' could not be installed after 3 attempts (missing/unmet dependency or persistent mirror failure)"
+    return 1
+}
+
+# Install available pentesting tools one at a time (skip unavailable ones).
+# apt-get install pkg1 pkg2 ... is all-or-nothing: if ANY single package has
+# an unmet dependency, NONE of them get installed. Looping installs each tool
+# independently so one broken dependency chain (e.g. wireshark's Qt6 stack)
+# doesn't silently take every other tool down with it.
 echo "[+] Installing available pentesting tools..."
-run_root apt-get install -y \
-    nmap \
-    masscan \
-    nikto \
-    gobuster \
-    sqlmap \
-    hydra \
-    whatweb \
-    dnsenum \
-    whois \
-    netcat-traditional \
-    curl \
-    wget \
-    git \
-    john \
-    hashcat \
-    aircrack-ng \
-    wireshark \
-    tshark || warn "Some pentesting tools may not be available in repositories"
+for tool in nmap masscan nikto gobuster sqlmap whatweb dnsenum whois \
+    netcat-traditional curl wget git john tshark; do
+    # hydra pulls ~15 extra libs (FreeRDP, MariaDB, memcached clients, etc.)
+    # for protocols nothing we wire up brute-forces; on this flaky network
+    # that's 15x the chances of hitting a dead mirror on one build. Add it
+    # back if a phase needs online brute-forcing later.
+    # wireshark (GUI, Qt6 widgets/multimedia), hashcat (full LLVM/Clang
+    # toolchain + 64MB OpenCL runtime for its GPU JIT backend), and
+    # aircrack-ng (pulls the same GTK/multimedia stack as wireshark via
+    # airgraph-ng) each drag in several hundred MB nothing we wire up uses.
+    # tshark (CLI) covers scripted packet capture; wireless auditing and GPU
+    # cracking can be added later if a phase actually needs them.
+    install_tool "$tool"
+done
 
 # Install additional security tools that are available
 echo "[+] Installing additional security tools..."
@@ -166,15 +185,9 @@ EXIFTOOL_PKG="exiftool"
 if ! apt-cache show exiftool >/dev/null 2>&1 && apt-cache show libimage-exiftool-perl >/dev/null 2>&1; then
     EXIFTOOL_PKG="libimage-exiftool-perl"
 fi
-run_root apt-get install -y \
-    binwalk \
-    foremost \
-    steghide \
-    "$EXIFTOOL_PKG" \
-    tcpdump \
-    ncat \
-    socat \
-    proxychains4 || warn "Some additional tools may not be available"
+for tool in binwalk foremost steghide "$EXIFTOOL_PKG" tcpdump ncat socat proxychains4; do
+    install_tool "$tool"
+done
 
 # Local-model provisioning is a user-controlled host action. Baking a daemon and a
 # multi-GB model download into the image build is non-deterministic and makes offline

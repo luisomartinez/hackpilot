@@ -21,6 +21,7 @@ Features:
 import os
 import sys
 import json
+import re
 import time
 import asyncio
 import argparse
@@ -34,6 +35,7 @@ import queue
 import shlex
 import hashlib
 import uuid
+from urllib.parse import urlparse
 from typing import Dict, List, Any, Optional, Union
 
 # Load environment variables
@@ -151,6 +153,10 @@ class Config:
         self.ENABLE_VOICE = self.config.getboolean("features", "enable_voice", fallback=True)
         self.ENABLE_WEB_DASHBOARD = self.config.getboolean("features", "enable_web_dashboard", fallback=True)
         self.ENABLE_REALTIME_DASHBOARD = self.config.getboolean("features", "enable_realtime_dashboard", fallback=True)
+        # Safe by default: real/simulated exploitation only runs if the operator
+        # explicitly opts in via .env. See phase4_exploitation.
+        self.ENABLE_AUTO_EXPLOIT = os.getenv("ENABLE_AUTO_EXPLOIT", "false").strip().lower() == "true"
+        self.ENABLE_ADVANCED_EXPLOITATION = os.getenv("ENABLE_ADVANCED_EXPLOITATION", "false").strip().lower() == "true"
         
         # Cloud settings
         self.DOCKER_HOST = os.getenv("DOCKER_HOST", self.config.get("cloud", "docker_host", fallback="unix:///var/run/docker.sock"))
@@ -1817,8 +1823,10 @@ class EnterpriseHackPilot:
         intel_table.add_column("CISA KEV", style="bold red")
         intel_table.add_column("Weaponized", style="bold yellow")
         intel_table.add_column("Prioritized Risk", style="bold red")
+        intel_table.add_column("Source", style="bold")
 
         found_any = False
+        any_heuristic = False
         for cid in lookup_ids:
             info = self.cve_intel.lookup_cve(cid)
             if info:
@@ -1826,6 +1834,11 @@ class EnterpriseHackPilot:
                 sev_color = "bold red" if info.severity == "CRITICAL" else "red" if info.severity == "HIGH" else "yellow"
                 kev_display = "[bold red]YES[/bold red]" if info.in_cisa_kev else "[green]NO[/green]"
                 weap_display = "[bold red]YES[/bold red]" if info.weaponized else "[green]NO[/green]"
+                if info.is_heuristic_estimate:
+                    any_heuristic = True
+                    source_display = "[bold yellow]⚠ Heuristic estimate[/bold yellow]"
+                else:
+                    source_display = "[green]Curated[/green]"
                 intel_table.add_row(
                     info.cve_id,
                     info.title[:45] + ("..." if len(info.title) > 45 else ""),
@@ -1834,11 +1847,19 @@ class EnterpriseHackPilot:
                     f"{info.epss_score * 100:.1f}% (top {100 - (info.epss_percentile * 100):.1f}%)",
                     kev_display,
                     weap_display,
-                    f"{info.prioritized_risk_score:.2f}/10.0"
+                    f"{info.prioritized_risk_score:.2f}/10.0",
+                    source_display
                 )
 
         if found_any:
             self.console.print(intel_table)
+            if any_heuristic:
+                self.console.print(
+                    "[yellow]⚠ Rows marked 'Heuristic estimate' are NOT real threat intelligence. "
+                    "This CVE is not in HackPilot's curated database, so CVSS/EPSS/KEV/weaponized "
+                    "values above are generic placeholders, not verified NVD/CISA/FIRST data. "
+                    "Confirm details at nvd.nist.gov before acting on them.[/yellow]"
+                )
         else:
             self.console.print(f"[yellow]No threat intelligence records matched '{query}'.[/yellow]")
 
@@ -2650,6 +2671,26 @@ class AIEngine:
             return self.engine.analyze_traffic(data)
         return f"[AI Analysis: {phase}]\nContext: {context}\nAnalysis of {len(data)} bytes completed successfully."
 
+def _extract_scan_host(target: str) -> str:
+    """
+    Extract a bare hostname/IP from a target for tools (like nmap) that cannot
+    parse a URL scheme. The web dashboard's "New Assessment" form accepts full
+    URLs (e.g. 'https://example.com'); nmap treats that whole string as a
+    single malformed target expression ("Unable to split netmask from target
+    expression"), exits 0, and scans zero hosts - silently reporting "no open
+    ports" instead of the real problem. Strip scheme/path/port so the actual
+    host gets scanned. Tools that accept full URLs natively (nikto) should
+    keep using the original, unmodified target string.
+    """
+    target = (target or "").strip()
+    if not target:
+        return target
+    if "://" in target:
+        return urlparse(target).hostname or target
+    # Bare "host[:port][/path]" with no scheme
+    return target.split("/", 1)[0].split(":", 1)[0]
+
+
 class EnterprisePentestingPhases:
     """Enterprise pentesting phases with advanced features"""
     
@@ -2668,9 +2709,9 @@ class EnterprisePentestingPhases:
         self.results = {}
         
     def phase1_reconnaissance(self):
-        """Phase 1: Intelligence Gathering & Reconnaissance"""
+        """Phase 1: Intelligence Gathering & Reconnaissance (live nmap scan)"""
         console.print(Panel("[bold blue]Phase 1: Intelligence Gathering & Reconnaissance[/bold blue]"))
-        
+
         res_id = None
         if self.db:
             res_id = self.db.create_phase_result(
@@ -2678,41 +2719,85 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 1: Intelligence Gathering & Reconnaissance",
                 phase_number=1,
                 results={"status": "running"},
-                tools_used=["nmap", "theharvester", "whatweb"]
+                tools_used=["nmap"]
             )
-            
-        time.sleep(1.5)
-        
+
+        target = (self.target_info or {}).get("target", "")
+        start_time = time.time()
+        open_ports = []
+        scan_error = None
+
+        if self.tool_manager and target:
+            scan_host = _extract_scan_host(target)
+            scan = self.tool_manager.run_command(
+                ["nmap", "-F", "-Pn", "--host-timeout", "30s", scan_host], timeout=60
+            )
+            if scan.get("success"):
+                for line in scan.get("stdout", "").splitlines():
+                    match = re.match(r"^(\d+/\w+)\s+open\s+(\S+)(.*)$", line.strip())
+                    if match:
+                        open_ports.append(f"Port {match.group(1)} ({match.group(2)}{match.group(3).strip()})")
+            else:
+                scan_error = (scan.get("stderr") or "").strip() or "nmap scan failed or nmap is not installed"
+        else:
+            scan_error = "No target configured or tool manager unavailable"
+
+        execution_time = time.time() - start_time
+
         if self.db:
-            self.db.create_vulnerability(
-                session_id=self.session_id,
-                phase="reconnaissance",
-                severity="info",
-                title="Open Ports & Service Footprint",
-                description="Target footprint analysis indicates public SSH, HTTP, and developer alternate ports exposed on the external boundary.",
-                proof_of_concept="Port 22/tcp (SSH - OpenSSH 8.2p1)\nPort 80/tcp (HTTP - Apache 2.4.41)\nPort 443/tcp (HTTPS - Apache 2.4.41)\nPort 8080/tcp (HTTP - Development Node Server)",
-                remediation="Ensure only essential services are reachable. Place administrative portals (e.g. port 8080) behind corporate VPN or access control lists.",
-                cvss_score=0.0
-            )
-            
+            if open_ports:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="reconnaissance",
+                    severity="info",
+                    title="Open Ports & Service Footprint",
+                    description=f"Live nmap scan of '{target}' found {len(open_ports)} open port(s).",
+                    proof_of_concept="\n".join(open_ports),
+                    remediation="Ensure only essential services are reachable. Restrict administrative/alternate ports with firewall rules, VPN, or ACLs.",
+                    cvss_score=0.0
+                )
+            else:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="reconnaissance",
+                    severity="info",
+                    title="Reconnaissance Scan Inconclusive",
+                    description=f"Live nmap scan against '{target}' did not return any open ports (host unreachable, firewalled, or nmap unavailable).",
+                    proof_of_concept=scan_error or "No open ports detected.",
+                    remediation="Verify the target is reachable from the scanning host and in-scope before proceeding to later phases.",
+                    cvss_score=0.0
+                )
+
             if res_id:
                 self.db.update_phase_result(
                     result_id=res_id,
                     status="completed",
                     completed_at=datetime.utcnow(),
-                    results={"success": True, "vulnerabilities_found": 1},
-                    ai_analysis="Active ports identified. Target web services found running on port 80/443 and development dashboard detected on port 8080.",
-                    execution_time=1.5
+                    results={"success": bool(open_ports), "vulnerabilities_found": 1, "open_ports": len(open_ports)},
+                    ai_analysis=(
+                        f"Live nmap reconnaissance against '{target}': {len(open_ports)} open port(s) detected."
+                        if open_ports else
+                        f"Live nmap reconnaissance against '{target}' returned no results: {scan_error}"
+                    ),
+                    execution_time=execution_time
                 )
-                
-        result = {"success": True, "vulnerabilities": [], "risk_score": 1.0}
+
+        # "success" means the phase completed (it ran nmap without crashing), not that
+        # it found open ports - run_full_enterprise_pentest aborts all remaining phases
+        # when success is False, which an empty/inconclusive scan must not trigger.
+        result = {
+            "success": True,
+            "vulnerabilities": [],
+            "risk_score": 1.0 if open_ports else 0.0,
+            "open_ports": open_ports,
+        }
         self.results["phase1_reconnaissance"] = result
         return result
     
     def phase2_scanning_enumeration(self):
-        """Phase 2: Advanced Scanning & Enumeration"""
+        """Phase 2: Advanced Scanning & Enumeration (live nmap service/version scan)"""
         console.print(Panel("[bold blue]Phase 2: Advanced Scanning & Enumeration[/bold blue]"))
-        
+
         res_id = None
         if self.db:
             res_id = self.db.create_phase_result(
@@ -2720,52 +2805,89 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 2: Advanced Scanning & Enumeration",
                 phase_number=2,
                 results={"status": "running"},
-                tools_used=["nmap", "nikto", "gobuster"]
+                tools_used=["nmap"]
             )
-            
-        time.sleep(1.5)
-        
+
+        target = (self.target_info or {}).get("target", "")
+        start_time = time.time()
+        services = []
+        scan_error = None
+
+        if self.tool_manager and target:
+            scan_host = _extract_scan_host(target)
+            scan = self.tool_manager.run_command(
+                # -sV without -p probes the top 1000 ports before even starting version
+                # detection; on a network with many filtered (non-responding) ports that
+                # alone can exceed a 120s host-timeout (confirmed: a real run took exactly
+                # 121s and was cut off). -F narrows it to the same top-100 fast set Phase 1
+                # already scanned, so -sV only has to version-probe the ports we know are open.
+                ["nmap", "-sV", "-F", "-Pn", "--host-timeout", "90s", scan_host], timeout=120
+            )
+            if scan.get("success"):
+                for line in scan.get("stdout", "").splitlines():
+                    match = re.match(r"^(\d+/\w+)\s+open\s+(\S+)\s*(.*)$", line.strip())
+                    if match:
+                        banner = match.group(3).strip()
+                        services.append(f"Port {match.group(1)} ({match.group(2)}){' - ' + banner if banner else ''}")
+            else:
+                scan_error = (scan.get("stderr") or "").strip() or "nmap service scan failed or nmap is not installed"
+        else:
+            scan_error = "No target configured or tool manager unavailable"
+
+        execution_time = time.time() - start_time
+
         if self.db:
-            self.db.create_vulnerability(
-                session_id=self.session_id,
-                phase="scanning",
-                severity="low",
-                title="Outdated Apache Web Server Version",
-                description="The web server Apache/2.4.41 is outdated and contains known low-to-medium risk vulnerabilities.",
-                proof_of_concept="Server: Apache/2.4.41 (Ubuntu)",
-                remediation="Update Apache to the latest stable release to patch vulnerabilities.",
-                cvss_score=3.7
-            )
-            
-            self.db.create_vulnerability(
-                session_id=self.session_id,
-                phase="scanning",
-                severity="high",
-                title="Exposed Git Repository Directory",
-                description="The target web server exposes the .git repository directory, allowing attackers to download source code, configuration files, and potential credentials.",
-                proof_of_concept="GET /.git/config HTTP/1.1\nResponse:\n[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\t...",
-                remediation="Restrict access to hidden files and directories (dotfiles) in the web server configuration, or remove the .git directory from the web server root.",
-                cvss_score=7.5
-            )
-            
+            if services:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="scanning",
+                    severity="info",
+                    title="Service Version Enumeration",
+                    description=f"Live nmap service/version scan of '{target}' identified {len(services)} running service(s). Versions should be checked against known CVEs separately.",
+                    proof_of_concept="\n".join(services),
+                    remediation="Keep identified service versions patched and remove banner/version disclosure where not operationally required.",
+                    cvss_score=0.0
+                )
+            else:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="scanning",
+                    severity="info",
+                    title="Service Enumeration Inconclusive",
+                    description=f"Live nmap service/version scan against '{target}' did not return identifiable services (host unreachable, firewalled, or nmap unavailable).",
+                    proof_of_concept=scan_error or "No services detected.",
+                    remediation="Verify the target is reachable from the scanning host before proceeding to later phases.",
+                    cvss_score=0.0
+                )
+
             if res_id:
                 self.db.update_phase_result(
                     result_id=res_id,
                     status="completed",
                     completed_at=datetime.utcnow(),
-                    results={"success": True, "vulnerabilities_found": 2},
-                    ai_analysis="Exposed development artifacts (.git) detected. Web server version identified as legacy Apache 2.4.41.",
-                    execution_time=1.5
+                    results={"success": bool(services), "vulnerabilities_found": 1, "services_found": len(services)},
+                    ai_analysis=(
+                        f"Live nmap enumeration against '{target}': {len(services)} service banner(s) identified."
+                        if services else
+                        f"Live nmap enumeration against '{target}' returned no results: {scan_error}"
+                    ),
+                    execution_time=execution_time
                 )
-                
-        result = {"success": True, "vulnerabilities": [], "risk_score": 3.0}
+
+        # Same reasoning as phase1: "success" = phase completed, not "found something".
+        result = {
+            "success": True,
+            "vulnerabilities": [],
+            "risk_score": 3.0 if services else 0.0,
+            "services": services,
+        }
         self.results["phase2_scanning_enumeration"] = result
         return result
     
     def phase3_vulnerability_assessment(self):
-        """Phase 3: Vulnerability Assessment"""
+        """Phase 3: Vulnerability Assessment (live nikto web scan, if an HTTP service was found)"""
         console.print(Panel("[bold blue]Phase 3: Vulnerability Assessment[/bold blue]"))
-        
+
         res_id = None
         if self.db:
             res_id = self.db.create_phase_result(
@@ -2773,52 +2895,93 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 3: Vulnerability Assessment",
                 phase_number=3,
                 results={"status": "running"},
-                tools_used=["sqlmap", "owasp-zap"]
+                tools_used=["nikto"]
             )
-            
-        time.sleep(1.5)
-        
+
+        target = (self.target_info or {}).get("target", "")
+        start_time = time.time()
+        findings = []
+        scan_error = None
+
+        prior_ports = list(self.results.get("phase1_reconnaissance", {}).get("open_ports", []))
+        prior_ports += list(self.results.get("phase2_scanning_enumeration", {}).get("services", []))
+        has_web_service = any(
+            "80/tcp" in p or "443/tcp" in p or "http" in p.lower() for p in prior_ports
+        )
+
+        if not target:
+            scan_error = "No target configured"
+        elif not has_web_service:
+            scan_error = "No HTTP/HTTPS service identified in Phase 1/2 to assess"
+        elif not self.tool_manager:
+            scan_error = "Tool manager unavailable"
+        else:
+            scan = self.tool_manager.run_command(
+                ["nikto", "-h", target, "-maxtime", "30s", "-Tuning", "1,2,3"], timeout=60
+            )
+            for line in scan.get("stdout", "").splitlines():
+                line = line.strip()
+                if line.startswith("+") and "0 host(s) tested" not in line:
+                    findings.append(line.lstrip("+ ").strip())
+            if not findings:
+                scan_error = (scan.get("stderr") or "").strip() or "nikto completed with no flagged items"
+
+        execution_time = time.time() - start_time
+
         if self.db:
-            self.db.create_vulnerability(
-                session_id=self.session_id,
-                phase="assessment",
-                severity="critical",
-                title="SQL Injection on Products API Endpoint",
-                description="An input sanitization vulnerability exists in the products lookup API endpoint. Unsanitized parameter inputs are concatenated directly into SQL queries.",
-                proof_of_concept="POST /api/v1/products HTTP/1.1\nHost: target.com\nContent-Type: application/json\n\n{\"id\": \"1' UNION SELECT 1,username,password_hash FROM users --\"}",
-                remediation="Implement prepared statements / parameterized queries for all database interactions. Avoid direct string concatenation of user-supplied inputs.",
-                cvss_score=9.8
-            )
-            
-            self.db.create_vulnerability(
-                session_id=self.session_id,
-                phase="assessment",
-                severity="medium",
-                title="Reflected Cross-Site Scripting (XSS) in Search Bar",
-                description="The application search bar accepts HTML HTML tags and scripts without proper sanitization or output encoding, allowing script execution in the context of the user's session.",
-                proof_of_concept="GET /search?q=<script>alert(document.cookie)</script> HTTP/1.1",
-                remediation="Sanitize search inputs using HTML entity encoding and define a strict Content Security Policy (CSP).",
-                cvss_score=6.1
-            )
-            
+            if findings:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="assessment",
+                    severity="info",
+                    title="Web Server Findings (nikto)",
+                    description=(
+                        f"Live nikto scan of '{target}' flagged {len(findings)} item(s) for manual review. "
+                        "nikto reports candidate issues, not confirmed exploitable vulnerabilities."
+                    ),
+                    proof_of_concept="\n".join(findings[:20]),
+                    remediation="Review each flagged item manually and confirm exploitability before prioritizing remediation.",
+                    cvss_score=0.0
+                )
+            else:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="assessment",
+                    severity="info",
+                    title="Vulnerability Assessment Inconclusive",
+                    description=f"No automated web vulnerability findings for '{target}'.",
+                    proof_of_concept=scan_error or "No findings.",
+                    remediation="Re-run after confirming an HTTP/HTTPS service is reachable, or assess the target manually.",
+                    cvss_score=0.0
+                )
+
             if res_id:
                 self.db.update_phase_result(
                     result_id=res_id,
                     status="completed",
                     completed_at=datetime.utcnow(),
-                    results={"success": True, "vulnerabilities_found": 2},
-                    ai_analysis="Critical SQL injection vulnerability detected and validated. Medium severity XSS vulnerability verified.",
-                    execution_time=1.5
+                    results={"success": True, "vulnerabilities_found": 1, "findings_count": len(findings)},
+                    ai_analysis=(
+                        f"Live nikto scan against '{target}': {len(findings)} item(s) flagged for review."
+                        if findings else
+                        f"Live nikto scan against '{target}' returned no results: {scan_error}"
+                    ),
+                    execution_time=execution_time
                 )
-                
-        result = {"success": True, "vulnerabilities": [], "risk_score": 5.0}
+
+        result = {
+            "success": True,
+            "vulnerabilities": [],
+            "risk_score": 5.0 if findings else 0.0,
+            "findings_count": len(findings),
+        }
         self.results["phase3_vulnerability_assessment"] = result
         return result
     
     def phase4_exploitation(self):
-        """Phase 4: Exploitation & Post-Exploitation"""
+        """Phase 4: Exploitation & Post-Exploitation (gated by config safe-mode flags)"""
         console.print(Panel("[bold red]Phase 4: Exploitation & Post-Exploitation[/bold red]"))
-        
+
         res_id = None
         if self.db:
             res_id = self.db.create_phase_result(
@@ -2826,41 +2989,85 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 4: Exploitation & Post-Exploitation",
                 phase_number=4,
                 results={"status": "running"},
-                tools_used=["metasploit", "custom_exploits"]
+                tools_used=["sqlmap"]
             )
-            
-        time.sleep(1.5)
-        
+
+        target = (self.target_info or {}).get("target", "")
+        start_time = time.time()
+        auto_exploit_enabled = bool(getattr(config, "ENABLE_AUTO_EXPLOIT", False))
+        advanced_exploit_enabled = bool(getattr(config, "ENABLE_ADVANCED_EXPLOITATION", False))
+        candidate_count = self.results.get("phase3_vulnerability_assessment", {}).get("findings_count", 0)
+
+        # This project's own config exposes ENABLE_AUTO_EXPLOIT / ENABLE_ADVANCED_EXPLOITATION
+        # specifically to gate intrusive/exploitation testing (see .env.example). Honor it: no
+        # exploit attempt, real or simulated, happens unless the operator explicitly opts in.
+        if not (auto_exploit_enabled and advanced_exploit_enabled):
+            skip_reason = (
+                f"Exploitation skipped for '{target}': safe mode is active "
+                f"(ENABLE_AUTO_EXPLOIT={auto_exploit_enabled}, ENABLE_ADVANCED_EXPLOITATION={advanced_exploit_enabled}). "
+                f"{candidate_count} candidate finding(s) from Phase 3 were not acted on."
+            )
+            if self.db:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="exploitation",
+                    severity="info",
+                    title="Exploitation Skipped - Safe Mode",
+                    description=skip_reason,
+                    proof_of_concept="No exploitation attempted. Set ENABLE_AUTO_EXPLOIT=true and ENABLE_ADVANCED_EXPLOITATION=true to enable this phase.",
+                    remediation="Not applicable - no exploitation was performed.",
+                    cvss_score=0.0
+                )
+                if res_id:
+                    self.db.update_phase_result(
+                        result_id=res_id,
+                        status="completed",
+                        completed_at=datetime.utcnow(),
+                        results={"success": True, "vulnerabilities_found": 0, "skipped": True},
+                        ai_analysis=skip_reason,
+                        execution_time=time.time() - start_time
+                    )
+
+            result = {"success": True, "vulnerabilities": [], "risk_score": 0.0}
+            self.results["phase4_exploitation"] = result
+            return result
+
+        # Exploitation explicitly enabled by the operator, but this build does not yet implement
+        # an automated exploit path - report that honestly instead of fabricating a result.
+        not_implemented_reason = (
+            f"Exploitation is enabled (ENABLE_AUTO_EXPLOIT=true, ENABLE_ADVANCED_EXPLOITATION=true) "
+            f"but no automated exploit technique is implemented for the {candidate_count} candidate "
+            f"finding(s) from Phase 3 yet. No action was taken against '{target}'."
+        )
         if self.db:
             self.db.create_vulnerability(
                 session_id=self.session_id,
                 phase="exploitation",
-                severity="critical",
-                title="Administrative Privilege Escalation via SQLi",
-                description="Leveraging the SQL Injection vulnerability, administrative password hashes were extracted and cracked. Administrator-level access to the web panel was achieved.",
-                proof_of_concept="Admin Account Compromised:\nUsername: admin\nPassword: admin123\nAccess Level: Full Read/Write",
-                remediation="Enforce complex password policies, use secure password hashing algorithms (bcrypt/argon2), and mitigate the underlying SQL injection flaw.",
-                cvss_score=9.8
+                severity="info",
+                title="Exploitation Enabled But Not Implemented",
+                description=not_implemented_reason,
+                proof_of_concept="No exploit module is wired up yet.",
+                remediation="Not applicable.",
+                cvss_score=0.0
             )
-            
             if res_id:
                 self.db.update_phase_result(
                     result_id=res_id,
                     status="completed",
                     completed_at=datetime.utcnow(),
-                    results={"success": True, "vulnerabilities_found": 1},
-                    ai_analysis="SQL injection exploited to dump schema and extract credentials. Found administrative account admin:admin123.",
-                    execution_time=1.5
+                    results={"success": True, "vulnerabilities_found": 0, "skipped": True},
+                    ai_analysis=not_implemented_reason,
+                    execution_time=time.time() - start_time
                 )
-                
-        result = {"success": True, "vulnerabilities": [], "risk_score": 8.0}
+
+        result = {"success": True, "vulnerabilities": [], "risk_score": 0.0}
         self.results["phase4_exploitation"] = result
         return result
     
     def phase5_reporting(self):
-        """Phase 5: Enterprise Reporting & Analytics"""
+        """Phase 5: Enterprise Reporting & Analytics (real report built from this session's findings)"""
         console.print(Panel("[bold blue]Phase 5: Enterprise Reporting & Analytics[/bold blue]"))
-        
+
         res_id = None
         if self.db:
             res_id = self.db.create_phase_result(
@@ -2868,30 +3075,92 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 5: Enterprise Reporting & Analytics",
                 phase_number=5,
                 results={"status": "running"},
-                tools_used=["reportlab", "weasyprint"]
+                tools_used=["report_generator"]
             )
-            
-        time.sleep(1.0)
-        
+
+        start_time = time.time()
+        report_text = None
+        report_error = None
+
         if self.db:
+            session_record = self.db.get_pentest_session(self.session_id)
+            vulnerabilities = self.db.get_vulnerabilities_by_session(self.session_id)
+            session_data = {
+                "target": session_record.target if session_record else self.target_info.get("target", "Unknown"),
+                "scope": session_record.scope if session_record else self.target_info.get("scope", "Unknown"),
+                "created_at": str(session_record.created_at) if session_record else "Unknown",
+                "vulnerabilities": [
+                    {
+                        "title": v.title,
+                        "severity": v.severity,
+                        "description": v.description,
+                        "remediation": v.remediation,
+                    }
+                    for v in vulnerabilities
+                ],
+            }
+            if self.report_generator:
+                try:
+                    report_text = self.report_generator.generate_technical_report(session_data)
+                except Exception as e:
+                    report_error = str(e)
+            else:
+                report_error = "Report generator not initialized"
+        else:
+            report_error = "Database not available - cannot assemble report from session findings"
+
+        execution_time = time.time() - start_time
+
+        if self.db:
+            if report_text:
+                reports_dir = Path("reports")
+                reports_dir.mkdir(exist_ok=True)
+                report_path = reports_dir / f"{self.session_id}_technical_report.txt"
+                report_path.write_text(report_text, encoding="utf-8")
+
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="reporting",
+                    severity="info",
+                    title="Technical Report Generated",
+                    description=f"A technical report covering {len(session_data['vulnerabilities'])} finding(s) from this session was generated.",
+                    proof_of_concept=f"Report saved to {report_path}",
+                    remediation="Not applicable.",
+                    cvss_score=0.0
+                )
+            else:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="reporting",
+                    severity="info",
+                    title="Report Generation Failed",
+                    description="The technical report could not be generated for this session.",
+                    proof_of_concept=report_error or "Unknown error.",
+                    remediation="Check report_generator initialization and database connectivity.",
+                    cvss_score=0.0
+                )
+
             if res_id:
                 self.db.update_phase_result(
                     result_id=res_id,
                     status="completed",
                     completed_at=datetime.utcnow(),
-                    results={"success": True, "vulnerabilities_found": 0},
-                    ai_analysis="Pentest reports compiled in JSON, PDF, and HTML formats mapping compliance guidelines.",
-                    execution_time=1.0
+                    results={"success": bool(report_text), "vulnerabilities_found": 1},
+                    ai_analysis=(
+                        "Technical report compiled from this session's real findings."
+                        if report_text else f"Report generation failed: {report_error}"
+                    ),
+                    execution_time=execution_time
                 )
-                
+
         result = {"success": True, "vulnerabilities": [], "risk_score": 0.0}
         self.results["phase5_reporting"] = result
         return result
     
     def phase6_retesting(self):
-        """Phase 6: Verification & Retesting"""
+        """Phase 6: Verification & Retesting (real diff against the prior session for this target)"""
         console.print(Panel("[bold blue]Phase 6: Verification & Retesting[/bold blue]"))
-        
+
         res_id = None
         if self.db:
             res_id = self.db.create_phase_result(
@@ -2899,22 +3168,60 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 6: Verification & Retesting",
                 phase_number=6,
                 results={"status": "running"},
-                tools_used=["custom_verifier"]
+                tools_used=["db_diff"]
             )
-            
-        time.sleep(1.0)
-        
+
+        target = (self.target_info or {}).get("target", "")
+        start_time = time.time()
+        summary = None
+
         if self.db:
+            current_titles = {v.title for v in self.db.get_vulnerabilities_by_session(self.session_id)}
+
+            prior_session = None
+            for s in self.db.get_recent_sessions(limit=50):
+                if s.target == target and s.id != self.session_id and s.status == "completed":
+                    prior_session = s
+                    break
+
+            if prior_session:
+                prior_titles = {v.title for v in self.db.get_vulnerabilities_by_session(prior_session.id)}
+                still_present = sorted(current_titles & prior_titles)
+                not_reproduced = sorted(prior_titles - current_titles)
+                new_findings = sorted(current_titles - prior_titles)
+                summary = (
+                    f"Compared against session {prior_session.id} ({prior_session.created_at}) for '{target}':\n"
+                    f"Still present ({len(still_present)}): {', '.join(still_present) or 'none'}\n"
+                    f"Not reproduced ({len(not_reproduced)}): {', '.join(not_reproduced) or 'none'}\n"
+                    f"New ({len(new_findings)}): {', '.join(new_findings) or 'none'}"
+                )
+            else:
+                summary = f"No prior completed session found for '{target}' - nothing to retest against. This is the baseline."
+
+        execution_time = time.time() - start_time
+
+        if self.db:
+            self.db.create_vulnerability(
+                session_id=self.session_id,
+                phase="retesting",
+                severity="info",
+                title="Retest Comparison" if prior_session else "No Baseline For Retest",
+                description=summary or "Retest comparison unavailable.",
+                proof_of_concept=summary or "N/A",
+                remediation="Absence of a finding does not confirm it is fixed unless independently reproduced as 'not_reproduced'.",
+                cvss_score=0.0
+            )
+
             if res_id:
                 self.db.update_phase_result(
                     result_id=res_id,
                     status="completed",
                     completed_at=datetime.utcnow(),
-                    results={"success": True, "vulnerabilities_found": 0},
-                    ai_analysis="Post-retesting checks verify that the vulnerabilities remain open. Target requires remediation of critical findings.",
-                    execution_time=1.0
+                    results={"success": True, "vulnerabilities_found": 1},
+                    ai_analysis=summary or "Retest comparison unavailable.",
+                    execution_time=execution_time
                 )
-                
+
         result = {"success": True, "vulnerabilities": [], "risk_score": 0.0}
         self.results["phase6_retesting"] = result
         return result
@@ -2971,14 +3278,14 @@ class EnterpriseWebDashboard:
         if not flask:
             return
             
-        from flask import Flask, render_template, request, jsonify
+        from flask import Flask, render_template, request, jsonify, Response
         from flask_cors import CORS
         import threading
         
         app = Flask(__name__, template_folder='templates', static_folder='static')
         CORS(app)
         app.secret_key = config.SECRET_KEY
-        
+
         @app.route('/')
         def index():
             return render_template('dashboard.html')
@@ -3095,6 +3402,92 @@ class EnterpriseWebDashboard:
             try:
                 self.hackpilot.db.update_session_status(session_id, 'cancelled', 'system')
                 return jsonify({"status": "cancelled", "session_id": session_id})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        @app.route('/api/session/<session_id>', methods=['DELETE'])
+        def delete_session(session_id):
+            """Delete one session and all its findings/phase results/attack chains."""
+            if not self.hackpilot.db:
+                return jsonify({"error": "Database not initialized"}), 500
+            try:
+                deleted = self.hackpilot.db.delete_session(session_id)
+                if not deleted:
+                    return jsonify({"error": "Session not found"}), 404
+                return jsonify({"status": "deleted", "session_id": session_id})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        @app.route('/api/sessions', methods=['DELETE'])
+        def delete_all_sessions():
+            """Wipe every session and all findings - full assessment history reset."""
+            if not self.hackpilot.db:
+                return jsonify({"error": "Database not initialized"}), 500
+            try:
+                count = self.hackpilot.db.delete_all_sessions()
+                return jsonify({"status": "deleted", "sessions_deleted": count})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        @app.route('/api/session/<session_id>/report', methods=['GET'])
+        def download_report(session_id):
+            """Generate and download a report for this session. ?format=pdf|html|json (default pdf)."""
+            if not self.hackpilot.db:
+                return jsonify({"error": "Database not initialized"}), 500
+            if not self.hackpilot.report_generator:
+                return jsonify({"error": "Report generator not initialized"}), 500
+
+            try:
+                session_obj = self.hackpilot.db.get_pentest_session(session_id)
+                if not session_obj:
+                    return jsonify({"error": "Session not found"}), 404
+
+                vulns = self.hackpilot.db.get_vulnerabilities_by_session(session_id)
+                session_data = {
+                    "target": session_obj.target,
+                    "scope": session_obj.scope,
+                    "created_at": session_obj.created_at.isoformat() if session_obj.created_at else "",
+                    "vulnerabilities": [{
+                        "title": v.title,
+                        "severity": v.severity,
+                        "description": v.description,
+                        "remediation": v.remediation,
+                        "cvss_score": v.cvss_score,
+                    } for v in vulns],
+                }
+
+                report_data = self.hackpilot.report_generator.generate_executive_report([session_data])
+                safe_target = "".join(c if c.isalnum() or c in "-_." else "_" for c in session_obj.target)
+                filename = f"hackpilot_report_{safe_target}_{session_id[:8]}"
+                fmt = request.args.get('format', 'pdf').lower()
+
+                if fmt == 'json':
+                    payload = json.dumps(report_data, indent=2, default=str)
+                    return Response(payload, mimetype='application/json',
+                                     headers={"Content-Disposition": f"attachment; filename={filename}.json"})
+
+                if fmt == 'html':
+                    html_content = self.hackpilot.report_generator.export_report(report_data, 'html')
+                    return Response(html_content, mimetype='text/html',
+                                     headers={"Content-Disposition": f"attachment; filename={filename}.html"})
+
+                # pdf (default)
+                output_path = self.hackpilot.report_generator.export_report(report_data, 'pdf')
+                try:
+                    if output_path.endswith('.html'):
+                        # weasyprint unavailable in this build - be honest and hand back
+                        # the HTML fallback rather than mislabeling it as a PDF.
+                        with open(output_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        return Response(content, mimetype='text/html',
+                                         headers={"Content-Disposition": f"attachment; filename={filename}.html"})
+                    with open(output_path, 'rb') as f:
+                        content = f.read()
+                    return Response(content, mimetype='application/pdf',
+                                     headers={"Content-Disposition": f"attachment; filename={filename}.pdf"})
+                finally:
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 

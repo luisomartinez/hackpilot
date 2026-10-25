@@ -1,6 +1,4 @@
 # HackPilot YAML configuration
-version: '3.8'
-
 services:
   # PostgreSQL Database
   hackpilot-database:
@@ -44,25 +42,28 @@ services:
       timeout: 10s
       retries: 5
 
-  # HackPilot Main Application
+  # HackPilot Main Application — API server
   hackpilot-app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: hackpilot-app
     restart: unless-stopped
+    command: ["--api"]
     depends_on:
       hackpilot-database:
         condition: service_healthy
       hackpilot-redis:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://hackpilot:${POSTGRES_PASSWORD}@hackpilot-database:5432/hackpilot
+      - DATABASE_URL=postgresql+psycopg2://hackpilot:${POSTGRES_PASSWORD}@hackpilot-database:5432/hackpilot
       - REDIS_URL=redis://:${REDIS_PASSWORD}@hackpilot-redis:6379/0
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HACKPILOT_PROVIDER=${HACKPILOT_PROVIDER}
+      - HACKPILOT_MODEL=${HACKPILOT_MODEL}
       - SECRET_KEY=${SECRET_KEY}
       - LOG_LEVEL=INFO
-      - ENABLE_WEB_DASHBOARD=true
       - ENABLE_API_SERVER=true
     volumes:
       - ./reports:/app/reports
@@ -72,7 +73,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"  # API Server
-      - "8080:8080"  # Web Dashboard
     networks:
       - hackpilot-network
     security_opt:
@@ -86,13 +86,52 @@ services:
       timeout: 10s
       retries: 5
 
+  # HackPilot Web Dashboard — separate process, --api and --web are mutually
+  # exclusive in advance_hackpilot.py's main(), so this cannot share hackpilot-app.
+  hackpilot-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hackpilot-web
+    restart: unless-stopped
+    command: ["--web"]
+    depends_on:
+      hackpilot-database:
+        condition: service_healthy
+      hackpilot-redis:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://hackpilot:${POSTGRES_PASSWORD}@hackpilot-database:5432/hackpilot
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@hackpilot-redis:6379/0
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HACKPILOT_PROVIDER=${HACKPILOT_PROVIDER}
+      - HACKPILOT_MODEL=${HACKPILOT_MODEL}
+      - SECRET_KEY=${SECRET_KEY}
+      - LOG_LEVEL=INFO
+      - ENABLE_WEB_DASHBOARD=true
+    volumes:
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+    ports:
+      - "8080:8080"  # Web Dashboard
+    networks:
+      - hackpilot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   # Celery Worker for Background Tasks
   hackpilot-worker:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: hackpilot-worker
     restart: unless-stopped
+    # The image ENTRYPOINT is `python3 advance_hackpilot.py`; command: alone
+    # would be appended as argv to that script instead of replacing it.
+    entrypoint: []
     command: celery -A performance.parallel_processor worker --loglevel=info --concurrency=4
     depends_on:
       hackpilot-database:
@@ -100,9 +139,12 @@ services:
       hackpilot-redis:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://hackpilot:${POSTGRES_PASSWORD}@hackpilot-database:5432/hackpilot
+      - DATABASE_URL=postgresql+psycopg2://hackpilot:${POSTGRES_PASSWORD}@hackpilot-database:5432/hackpilot
       - REDIS_URL=redis://:${REDIS_PASSWORD}@hackpilot-redis:6379/0
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HACKPILOT_PROVIDER=${HACKPILOT_PROVIDER}
+      - HACKPILOT_MODEL=${HACKPILOT_MODEL}
       - SECRET_KEY=${SECRET_KEY}
       - LOG_LEVEL=INFO
     volumes:
@@ -122,6 +164,7 @@ services:
       dockerfile: Dockerfile
     container_name: hackpilot-scheduler
     restart: unless-stopped
+    entrypoint: []
     command: celery -A performance.parallel_processor beat --loglevel=info
     depends_on:
       hackpilot-database:
@@ -129,9 +172,12 @@ services:
       hackpilot-redis:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://hackpilot:${POSTGRES_PASSWORD}@hackpilot-database:5432/hackpilot
+      - DATABASE_URL=postgresql+psycopg2://hackpilot:${POSTGRES_PASSWORD}@hackpilot-database:5432/hackpilot
       - REDIS_URL=redis://:${REDIS_PASSWORD}@hackpilot-redis:6379/0
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HACKPILOT_PROVIDER=${HACKPILOT_PROVIDER}
+      - HACKPILOT_MODEL=${HACKPILOT_MODEL}
       - SECRET_KEY=${SECRET_KEY}
       - LOG_LEVEL=INFO
     volumes:
@@ -239,6 +285,7 @@ services:
       - hackpilot-network
     depends_on:
       - hackpilot-app
+      - hackpilot-web
 
   # Flower for Celery Monitoring
   flower:
@@ -247,6 +294,7 @@ services:
       dockerfile: Dockerfile
     container_name: hackpilot-flower
     restart: unless-stopped
+    entrypoint: []
     command: celery -A performance.parallel_processor flower --port=5555 --broker=redis://:${REDIS_PASSWORD}@hackpilot-redis:6379/0
     ports:
       - "5555:5555"

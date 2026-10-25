@@ -180,7 +180,10 @@
                     <div class="table-card">
                         <div class="table-header">
                             <h3>Recent Assessment Sessions</h3>
-                            <button class="btn btn-secondary btn-sm" onclick="fetchDashboardData()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                            <div>
+                                <button class="btn btn-secondary btn-sm" onclick="fetchDashboardData()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                                <button class="btn btn-danger btn-sm" onclick="clearAllHistory()"><i class="fa-solid fa-trash"></i> Clear All History</button>
+                            </div>
                         </div>
                         <div class="table-responsive">
                             <table class="custom-table">
@@ -681,11 +684,17 @@
                             <button class="btn btn-secondary btn-sm" onclick="viewSessionDetails('${s.session_id}')">
                                 <i class="fa-regular fa-folder-open"></i> View
                             </button>
+                            <button class="btn btn-secondary btn-sm" onclick="downloadReport('${s.session_id}', 'pdf')" title="Download PDF report">
+                                <i class="fa-regular fa-file-pdf"></i> PDF
+                            </button>
                             ${s.status === 'running' ? `
                                 <button class="btn btn-danger btn-sm" onclick="cancelSession('${s.session_id}')">
                                     <i class="fa-solid fa-stop"></i> Stop
                                 </button>
                             ` : ''}
+                            <button class="btn btn-danger btn-sm" onclick="deleteSession('${s.session_id}', '${escapeHtml(s.target).replace(/'/g, "\\'")}')">
+                                <i class="fa-solid fa-trash"></i> Delete
+                            </button>
                         </td>
                     </tr>
                 `;
@@ -1086,6 +1095,50 @@
                 fetchDashboardData();
             })
             .catch(err => console.error("Error cancelling session:", err));
+        }
+
+        // Download a generated report (pdf/html/json) for one session
+        function downloadReport(sessionId, format) {
+            addTerminalLog("System", `Generating ${format.toUpperCase()} report for session ${sessionId}...`, "info");
+            // Use a plain navigation instead of fetch+blob so the browser's native
+            // download handling (Content-Disposition) takes over directly.
+            window.open(`/api/session/${sessionId}/report?format=${encodeURIComponent(format)}`, '_blank');
+        }
+
+        // Delete one session and all its findings (so it can't mix with future runs)
+        function deleteSession(sessionId, targetName) {
+            if (!confirm(`Delete all history for "${targetName}"? This removes the session, its findings, and phase results permanently.`)) return;
+
+            fetch(`/api/session/${sessionId}`, { method: 'DELETE' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        addTerminalLog("System", `Failed to delete session: ${data.error}`, "error");
+                        return;
+                    }
+                    addTerminalLog("System", `Session ${sessionId} (${targetName}) deleted.`, "warn");
+                    if (activeSessionId === sessionId) activeSessionId = null;
+                    fetchDashboardData();
+                })
+                .catch(err => console.error("Error deleting session:", err));
+        }
+
+        // Wipe the entire assessment history (all sessions, all targets)
+        function clearAllHistory() {
+            if (!confirm("Delete ALL assessment history for every target? This cannot be undone.")) return;
+
+            fetch('/api/sessions', { method: 'DELETE' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        addTerminalLog("System", `Failed to clear history: ${data.error}`, "error");
+                        return;
+                    }
+                    addTerminalLog("System", `Cleared ${data.sessions_deleted} session(s) from history.`, "warn");
+                    activeSessionId = null;
+                    fetchDashboardData();
+                })
+                .catch(err => console.error("Error clearing history:", err));
         }
 
         // View Session Details

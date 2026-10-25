@@ -38,6 +38,15 @@ class DatabaseManager:
             self.logger.info("Database tables created successfully")
             return True
         except Exception as e:
+            # Multiple processes (app/web/worker x2/scheduler) call this concurrently
+            # on startup. SQLAlchemy's checkfirst for Postgres ENUM types isn't
+            # race-safe: two processes can both see "not created yet" and both
+            # issue CREATE TYPE, so one loses with a duplicate-key error on
+            # pg_type. That race is harmless here - the type/table ends up
+            # correctly created either way - so treat it as success, not a fatal.
+            if "duplicate key" in str(e).lower() or "already exists" in str(e).lower():
+                self.logger.info(f"Tables/types already created by a concurrent process: {e}")
+                return True
             self.logger.error(f"Error creating tables: {e}")
             return False
     
@@ -118,7 +127,44 @@ class DatabaseManager:
         if old_status is not None:
             self.log_action(user_id, 'update', 'pentest_session', session_id,
                           {'old_status': old_status, 'new_status': status})
-    
+
+    def delete_session(self, session_id: str, user_id: str = 'system') -> bool:
+        """
+        Permanently delete a pentest session and every record tied to it
+        (vulnerabilities, phase results, attack chains, AI context). Used by
+        the dashboard's "Delete" action so old assessments can be wiped
+        before a fresh run against the same or a different target - without
+        this, Phase 6 (retesting) would keep comparing against stale data
+        and old findings would stay visible alongside new ones.
+        """
+        with self.get_session() as session:
+            pentest_session = session.query(PentestSession).filter(PentestSession.id == session_id).first()
+            if not pentest_session:
+                return False
+            target = pentest_session.target
+
+            session.query(AttackChain).filter(AttackChain.session_id == session_id).delete(synchronize_session=False)
+            session.query(AIContext).filter(AIContext.session_id == session_id).delete(synchronize_session=False)
+            session.query(Vulnerability).filter(Vulnerability.session_id == session_id).delete(synchronize_session=False)
+            session.query(PhaseResult).filter(PhaseResult.session_id == session_id).delete(synchronize_session=False)
+            session.query(PentestSession).filter(PentestSession.id == session_id).delete(synchronize_session=False)
+
+        self.log_action(user_id, 'delete', 'pentest_session', session_id, {'target': target})
+        return True
+
+    def delete_all_sessions(self, user_id: str = 'system') -> int:
+        """Permanently delete every pentest session and all related records (full history wipe)."""
+        with self.get_session() as session:
+            count = session.query(PentestSession).count()
+            session.query(AttackChain).delete(synchronize_session=False)
+            session.query(AIContext).delete(synchronize_session=False)
+            session.query(Vulnerability).delete(synchronize_session=False)
+            session.query(PhaseResult).delete(synchronize_session=False)
+            session.query(PentestSession).delete(synchronize_session=False)
+
+        self.log_action(user_id, 'delete_all', 'pentest_session', 'all', {'sessions_deleted': count})
+        return count
+
     # Vulnerability management
     def create_vulnerability(self, session_id: str, phase: str, severity: str, title: str,
                            description: str, cvss_score: float = None, cvss_vector: str = None,

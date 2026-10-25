@@ -32,6 +32,24 @@ except ImportError:
     CELERY_AVAILABLE = False
     logging.warning("Celery not available. Install with: pip install celery")
 
+# Module-level Celery app so `celery -A performance.parallel_processor`
+# (used by the worker/beat/flower containers) has an app instance to load.
+# ParallelProcessor's own self.celery_app is a separate, optional instance
+# used only when a caller constructs it with use_celery=True.
+if CELERY_AVAILABLE:
+    app = Celery(
+        'hackpilot-tasks',
+        broker=os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
+        backend=os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
+    )
+    app.conf.update(
+        task_serializer='json',
+        accept_content=['json'],
+        result_serializer='json',
+        timezone='UTC',
+        enable_utc=True,
+    )
+
 try:
     import aioredis
     AIOREDIS_AVAILABLE = True

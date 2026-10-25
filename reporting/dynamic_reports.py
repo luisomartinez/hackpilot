@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from io import BytesIO
 import pandas as pd
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Environment, FileSystemLoader, Template, TemplateNotFound
 
 from database import get_db_manager
 
@@ -798,14 +798,13 @@ class DynamicReportGenerator:
 
     def generate_technical_report(self, session_data: Dict[str, Any]) -> str:
         """Generate detailed technical report"""
-        template = (
-            self.jinja_env.get_template("technical_report.html")
-            if self.jinja_env.get_template
-            else None
-        )
-
-        if not template:
-            # Return basic text report if template not available
+        # jinja2's get_template() raises TemplateNotFound rather than returning
+        # None when the file is missing - no "technical_report.html" is ever
+        # created by _create_default_templates (only executive_summary.html is),
+        # so this always needs the text fallback below.
+        try:
+            template = self.jinja_env.get_template("technical_report.html")
+        except TemplateNotFound:
             return self._generate_text_technical_report(session_data)
 
         return template.render(session_data=session_data)
@@ -888,21 +887,23 @@ class DynamicReportGenerator:
             )
 
     def _export_pdf_report(self, report_data: Dict[str, Any]) -> str:
-        """Export report as PDF (returns file path)"""
+        """Export report as PDF (returns file path). Renders the same HTML
+        report through WeasyPrint rather than just saving the HTML - this
+        previously always silently returned an .html file with a '.pdf'-
+        sounding docstring and no actual PDF was ever produced."""
+        html_content = self._export_html_report(report_data)
+        pdf_path = f"/tmp/report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+
         try:
-            # This would use a library like WeasyPrint or ReportLab to generate PDF
-            # For now, return a placeholder
-            html_content = self._export_html_report(report_data)
-
-            # In a real implementation, you would convert HTML to PDF here
-            pdf_path = f"/tmp/report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
-
-            # Placeholder: save HTML instead of PDF for now
-            with open(pdf_path.replace(".pdf", ".html"), "w") as f:
-                f.write(html_content)
-
-            return pdf_path.replace(".pdf", ".html")
-
+            from weasyprint import HTML
+            HTML(string=html_content).write_pdf(pdf_path)
+            return pdf_path
+        except ImportError:
+            self.logger.warning("weasyprint not installed; falling back to HTML export")
         except Exception as e:
             self.logger.error(f"Error exporting PDF report: {e}")
-            raise
+
+        html_path = pdf_path.replace(".pdf", ".html")
+        with open(html_path, "w") as f:
+            f.write(html_content)
+        return html_path

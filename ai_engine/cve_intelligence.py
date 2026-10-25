@@ -36,6 +36,11 @@ class CVEInfo:
     mitre_attack_ids: List[str] = field(default_factory=list)
     remediation: str = ""
     references: List[str] = field(default_factory=list)
+    # True when this record is a generic template filled in for a CVE ID not
+    # present in the curated database (see _generate_heuristic_cve_info) -
+    # every field below cvss_score=6.5/MEDIUM/epss_score=0.10 is a placeholder,
+    # not real threat intelligence, and callers must surface that distinction.
+    is_heuristic_estimate: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert CVEInfo to dictionary representation."""
@@ -305,7 +310,8 @@ class CVEIntelligenceEngine:
             affected_components=["Generic Component"],
             mitre_attack_ids=["T1190"],
             remediation="Review vendor security bulletins and apply recommended updates.",
-            references=[f"https://nvd.nist.gov/vuln/detail/{cve_id}"]
+            references=[f"https://nvd.nist.gov/vuln/detail/{cve_id}"],
+            is_heuristic_estimate=True,
         )
 
     def enrich_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
