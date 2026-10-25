@@ -17,14 +17,20 @@ def _stub(name: str) -> types.ModuleType:
     return sys.modules[name]
 
 
+# NOTE: these are unconditionally stubbed (not "only if missing real import")
+# on purpose - several existing tests depend on the *blank* stand-in rather
+# than whatever version happens to be installed on the host (e.g. the real
+# `kubernetes`/`jwt` clients behave differently enough from a blank module to
+# change test outcomes). bcrypt, flask and flask_cors are deliberately left
+# off this list: they're genuinely installed, nothing here relied on them
+# being blanked, and Sprint 0's dashboard auth tests need the real Flask
+# app/test_client/bcrypt.checkpw behavior, not a MagicMock standing in.
 for _mod in (
     "openai",
     "speech_recognition",
     "pyttsx3",
     "pypandoc",
     "cvsslib",
-    "flask",
-    "flask_cors",
     "redis",
     "psycopg2",
     "sqlalchemy",
@@ -33,7 +39,6 @@ for _mod in (
     "kubernetes",
     "consul",
     "jwt",
-    "bcrypt",
     "ldap3",
     "numpy",
     "pandas",
@@ -44,18 +49,39 @@ for _mod in (
 ):
     _stub(_mod)
 
-for _name in ("Flask", "render_template", "request", "jsonify", "session"):
-    setattr(_stub("flask"), _name, MagicMock())
-_stub("flask_cors").CORS = MagicMock()
-_stub("celery").Celery = MagicMock()
-for _name in ("Server", "Connection", "ALL"):
-    setattr(_stub("ldap3"), _name, MagicMock())
+# Populate sys.modules with the real package when it's actually installed,
+# so _stub("flask")/_stub("flask_cors") below return it instead of creating
+# a blank stand-in (bcrypt gets the same treatment implicitly - it was never
+# added to the blanket-stub loop above).
+for _real_mod in ("flask", "flask_cors"):
+    try:
+        __import__(_real_mod)
+    except ImportError:
+        pass
+
+
+def _fill_missing(mod: types.ModuleType, **attrs) -> None:
+    """Set each attribute only if the module doesn't already provide it -
+    so a real, installed library is never clobbered by a mock."""
+    for name, value in attrs.items():
+        if not hasattr(mod, name):
+            setattr(mod, name, value)
+
+
+_fill_missing(
+    _stub("flask"),
+    Flask=MagicMock(), render_template=MagicMock(), request=MagicMock(),
+    jsonify=MagicMock(), session=MagicMock(), Response=MagicMock(),
+)
+_fill_missing(_stub("flask_cors"), CORS=MagicMock())
+_fill_missing(_stub("celery"), Celery=MagicMock())
+_fill_missing(_stub("ldap3"), Server=MagicMock(), Connection=MagicMock(), ALL=MagicMock())
 
 matplotlib = _stub("matplotlib")
-matplotlib.use = MagicMock()
+_fill_missing(matplotlib, use=MagicMock())
 _stub("matplotlib.pyplot")
-_stub("sklearn.cluster").DBSCAN = MagicMock()
-_stub("sklearn.ensemble").IsolationForest = MagicMock()
+_fill_missing(_stub("sklearn.cluster"), DBSCAN=MagicMock())
+_fill_missing(_stub("sklearn.ensemble"), IsolationForest=MagicMock())
 
 _internal = {
     "database": [

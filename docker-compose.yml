@@ -110,6 +110,12 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - LOG_LEVEL=INFO
       - ENABLE_WEB_DASHBOARD=true
+      # Dashboard auth gate (security/dashboard_auth.py). Unset by default,
+      # which keeps the process bound to 127.0.0.1 inside the container -
+      # set all three in .env to allow authenticated LAN/remote access.
+      - CONSOLE_AUTH_USER=${CONSOLE_AUTH_USER:-}
+      - CONSOLE_AUTH_PASS_HASH=${CONSOLE_AUTH_PASS_HASH:-}
+      - CONSOLE_ALLOWED_IPS=${CONSOLE_ALLOWED_IPS:-127.0.0.1}
     volumes:
       - ./reports:/app/reports
       - ./logs:/app/logs
@@ -118,7 +124,7 @@ services:
     networks:
       - hackpilot-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 5

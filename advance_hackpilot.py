@@ -934,7 +934,9 @@ class EnterpriseHackPilot:
             self.console.print("[red]Web Dashboard is not initialized (enable in config or missing flask)[/red]")
             return
         
-        self.console.print("[cyan]Starting HackPilot Web Dashboard on http://0.0.0.0:8080[/cyan]")
+        from security.dashboard_auth import resolve_dashboard_host
+        dashboard_host = resolve_dashboard_host()
+        self.console.print(f"[cyan]Starting HackPilot Web Dashboard on http://{dashboard_host}:8080[/cyan]")
         self.web_dashboard.run()
     
     def run_soc_analysis(self):
@@ -3286,6 +3288,9 @@ class EnterpriseWebDashboard:
         CORS(app)
         app.secret_key = config.SECRET_KEY
 
+        from security.dashboard_auth import init_dashboard_auth
+        init_dashboard_auth(app)
+
         @app.route('/')
         def index():
             return render_template('dashboard.html')
@@ -3664,7 +3669,8 @@ class EnterpriseWebDashboard:
         if not self.app:
             print("Flask is not available, cannot start Web Dashboard.")
             return
-        self.app.run(host='0.0.0.0', port=8080, debug=False)
+        from security.dashboard_auth import resolve_dashboard_host
+        self.app.run(host=resolve_dashboard_host(), port=8080, debug=False)
 
 class BasicReportGenerator:
     """Basic report generator fallback"""
