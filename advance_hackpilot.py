@@ -2978,6 +2978,7 @@ class EnterprisePentestingPhases:
         # nikto scan above and gated on the same has_web_service signal.
         # Each tool isolated in its own try/except - one failing doesn't
         # take out the others or the phase.
+        consolidated_vuln_findings: List[Dict[str, Any]] = []
         if target and has_web_service and self.tool_manager:
             scan_host = _extract_scan_host(target)
             subdomains = list(self.results.get("phase1_reconnaissance", {}).get("subdomains", []))
@@ -3003,8 +3004,9 @@ class EnterprisePentestingPhases:
             except Exception as e:
                 logger.warning("wapiti failed for %s: %s", wapiti_target, e)
 
+            consolidated_vuln_findings = consolidate(raw_vuln_findings)
             if self.db:
-                for finding in consolidate(raw_vuln_findings):
+                for finding in consolidated_vuln_findings:
                     self.db.create_vulnerability(
                         session_id=self.session_id,
                         phase="assessment",
@@ -3068,10 +3070,11 @@ class EnterprisePentestingPhases:
             "vulnerabilities": [],
             "risk_score": 5.0 if findings else 0.0,
             "findings_count": len(findings),
+            "consolidated_findings": consolidated_vuln_findings,
         }
         self.results["phase3_vulnerability_assessment"] = result
         return result
-    
+
     def phase4_exploitation(self):
         """Phase 4: Exploitation & Post-Exploitation (gated by config safe-mode flags)"""
         console.print(Panel("[bold red]Phase 4: Exploitation & Post-Exploitation[/bold red]"))
@@ -3083,7 +3086,7 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 4: Exploitation & Post-Exploitation",
                 phase_number=4,
                 results={"status": "running"},
-                tools_used=["sqlmap"]
+                tools_used=["ffuf", "sqlmap", "msf_check"]
             )
 
         target = (self.target_info or {}).get("target", "")
@@ -3117,44 +3120,141 @@ class EnterprisePentestingPhases:
                         result_id=res_id,
                         status="completed",
                         completed_at=datetime.utcnow(),
-                        results={"success": True, "vulnerabilities_found": 0, "skipped": True},
+                        results={"success": True, "vulnerabilities_found": 0, "skipped": True, "mode": "safe"},
                         ai_analysis=skip_reason,
                         execution_time=time.time() - start_time
                     )
 
-            result = {"success": True, "vulnerabilities": [], "risk_score": 0.0}
+            result = {"success": True, "vulnerabilities": [], "risk_score": 0.0, "mode": "safe"}
             self.results["phase4_exploitation"] = result
             return result
 
-        # Exploitation explicitly enabled by the operator, but this build does not yet implement
-        # an automated exploit path - report that honestly instead of fabricating a result.
-        not_implemented_reason = (
-            f"Exploitation is enabled (ENABLE_AUTO_EXPLOIT=true, ENABLE_ADVANCED_EXPLOITATION=true) "
-            f"but no automated exploit technique is implemented for the {candidate_count} candidate "
-            f"finding(s) from Phase 3 yet. No action was taken against '{target}'."
-        )
-        if self.db:
-            self.db.create_vulnerability(
-                session_id=self.session_id,
-                phase="exploitation",
-                severity="info",
-                title="Exploitation Enabled But Not Implemented",
-                description=not_implemented_reason,
-                proof_of_concept="No exploit module is wired up yet.",
-                remediation="Not applicable.",
-                cvss_score=0.0
+        # Exploitation explicitly enabled by the operator. Still gated on top
+        # of ENABLE_AUTO_EXPLOIT/ENABLE_ADVANCED_EXPLOITATION by ALLOWED_TARGETS
+        # (security/target_allowlist.py, fails closed when unset) - active
+        # tools (sqlmap, ffuf, Metasploit) are a materially bigger blast
+        # radius than the passive/recon tools in phases 1-3.
+        from security.target_allowlist import is_target_allowed
+        if not is_target_allowed(target):
+            not_allowlisted_reason = (
+                f"Exploitation is enabled but '{target}' is not in ALLOWED_TARGETS "
+                f"(.env). Active tools (sqlmap/ffuf/Metasploit) refuse to run against "
+                f"a target the operator hasn't explicitly allowlisted, even with both "
+                f"exploitation flags on. {candidate_count} candidate finding(s) from "
+                f"Phase 3 were not acted on."
             )
-            if res_id:
-                self.db.update_phase_result(
-                    result_id=res_id,
-                    status="completed",
-                    completed_at=datetime.utcnow(),
-                    results={"success": True, "vulnerabilities_found": 0, "skipped": True},
-                    ai_analysis=not_implemented_reason,
-                    execution_time=time.time() - start_time
+            if self.db:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="exploitation",
+                    severity="info",
+                    title="Exploitation Enabled But Target Not Allowlisted",
+                    description=not_allowlisted_reason,
+                    proof_of_concept="Set ALLOWED_TARGETS in .env to the host(s) you are authorized to actively test.",
+                    remediation="Not applicable - no exploitation was performed.",
+                    cvss_score=0.0
+                )
+                if res_id:
+                    self.db.update_phase_result(
+                        result_id=res_id,
+                        status="completed",
+                        completed_at=datetime.utcnow(),
+                        results={"success": True, "vulnerabilities_found": 0, "skipped": True, "mode": "active"},
+                        ai_analysis=not_allowlisted_reason,
+                        execution_time=time.time() - start_time
+                    )
+            result = {"success": True, "vulnerabilities": [], "risk_score": 0.0, "mode": "active"}
+            self.results["phase4_exploitation"] = result
+            return result
+
+        scan_host = _extract_scan_host(target)
+        base_url = target if "://" in target else f"http://{target}"
+        port = "443" if base_url.startswith("https://") else "80"
+
+        prior_findings = self.results.get("phase3_vulnerability_assessment", {}).get("consolidated_findings", [])
+        param_urls = sorted({f["target"] for f in prior_findings if "?" in f.get("target", "")})
+        if "?" in target:
+            param_urls.append(target)
+        cve_ids = sorted({
+            match
+            for f in prior_findings
+            for match in re.findall(r"CVE-\d{4}-\d{4,7}", f.get("title", "") + json.dumps(f.get("evidence", {})))
+        })
+
+        from exploitation.tools import run_ffuf_dirs, run_ffuf_vhosts, run_sqlmap, run_msf_check
+        from exploitation.findings_consolidator import consolidate
+
+        # Order: ffuf(dirs) -> sqlmap (on Phase 3's parameterized URLs) ->
+        # Metasploit check (on Phase 3's nuclei CVEs) -> ffuf(vhosts). Each
+        # tool isolated in its own try/except - one failing doesn't abort
+        # the rest or the phase.
+        raw_exploit_findings = []
+
+        try:
+            raw_exploit_findings.extend(run_ffuf_dirs(self.tool_manager, base_url))
+        except Exception as e:
+            logger.warning("ffuf (dirs) failed for %s: %s", base_url, e)
+
+        for url in param_urls:
+            try:
+                raw_exploit_findings.extend(run_sqlmap(self.tool_manager, url))
+            except Exception as e:
+                logger.warning("sqlmap failed for %s: %s", url, e)
+
+        for cve_id in cve_ids:
+            try:
+                raw_exploit_findings.extend(run_msf_check(self.tool_manager, cve_id, scan_host, port))
+            except Exception as e:
+                logger.warning("msf_check failed for %s against %s: %s", cve_id, scan_host, e)
+
+        try:
+            raw_exploit_findings.extend(run_ffuf_vhosts(self.tool_manager, scan_host))
+        except Exception as e:
+            logger.warning("ffuf (vhosts) failed for %s: %s", scan_host, e)
+
+        consolidated_exploit_findings = consolidate(raw_exploit_findings)
+        if self.db:
+            for finding in consolidated_exploit_findings:
+                self.db.create_vulnerability(
+                    session_id=self.session_id,
+                    phase="exploitation",
+                    severity=finding["severity"],
+                    title=finding["title"],
+                    description=f"Reported by: {', '.join(finding['sources'])}.",
+                    proof_of_concept=finding["target"],
+                    remediation="Review manually; validate and remediate before retesting.",
+                    cvss_score=0.0,
+                    sources=finding["sources"],
+                    validated=finding["validated"],
+                    confidence=finding["confidence"],
+                    evidence=finding["evidence"],
                 )
 
-        result = {"success": True, "vulnerabilities": [], "risk_score": 0.0}
+        active_summary = (
+            f"Active exploitation against '{target}': ffuf dirs/vhosts, sqlmap on "
+            f"{len(param_urls)} parameterized URL(s), Metasploit check on {len(cve_ids)} "
+            f"CVE(s) from Phase 3. {len(consolidated_exploit_findings)} finding(s) confirmed."
+        )
+        if self.db and res_id:
+            self.db.update_phase_result(
+                result_id=res_id,
+                status="completed",
+                completed_at=datetime.utcnow(),
+                results={
+                    "success": True,
+                    "vulnerabilities_found": len(consolidated_exploit_findings),
+                    "mode": "active",
+                },
+                ai_analysis=active_summary,
+                execution_time=time.time() - start_time
+            )
+
+        result = {
+            "success": True,
+            "vulnerabilities": [],
+            "risk_score": 9.0 if consolidated_exploit_findings else 0.0,
+            "mode": "active",
+        }
         self.results["phase4_exploitation"] = result
         return result
     
