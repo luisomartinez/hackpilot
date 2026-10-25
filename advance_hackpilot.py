@@ -3115,10 +3115,11 @@ class EnterprisePentestingPhases:
 
         if self.db:
             if report_text:
+                from security.report_crypto import write_report_text
                 reports_dir = Path("reports")
                 reports_dir.mkdir(exist_ok=True)
                 report_path = reports_dir / f"{self.session_id}_technical_report.txt"
-                report_path.write_text(report_text, encoding="utf-8")
+                written_path = write_report_text(report_path, report_text)
 
                 self.db.create_vulnerability(
                     session_id=self.session_id,
@@ -3126,7 +3127,7 @@ class EnterprisePentestingPhases:
                     severity="info",
                     title="Technical Report Generated",
                     description=f"A technical report covering {len(session_data['vulnerabilities'])} finding(s) from this session was generated.",
-                    proof_of_concept=f"Report saved to {report_path}",
+                    proof_of_concept=f"Report saved to {written_path}",
                     remediation="Not applicable.",
                     cvss_score=0.0
                 )
@@ -3486,8 +3487,11 @@ class EnterpriseWebDashboard:
                             content = f.read()
                         return Response(content, mimetype='text/html',
                                          headers={"Content-Disposition": f"attachment; filename={filename}.html"})
-                    with open(output_path, 'rb') as f:
-                        content = f.read()
+                    # output_path may be "<...>.pdf" or, when REPORT_ENCRYPTION_KEY
+                    # is configured, "<...>.pdf.enc" - read_report_file decrypts
+                    # transparently in memory either way.
+                    from security.report_crypto import read_report_file
+                    content = read_report_file(output_path)
                     return Response(content, mimetype='application/pdf',
                                      headers={"Content-Disposition": f"attachment; filename={filename}.pdf"})
                 finally:

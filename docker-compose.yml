@@ -65,6 +65,7 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - LOG_LEVEL=INFO
       - ENABLE_API_SERVER=true
+      - REPORT_ENCRYPTION_KEY=${REPORT_ENCRYPTION_KEY:-}
     volumes:
       - ./reports:/app/reports
       - ./logs:/app/logs
@@ -116,6 +117,9 @@ services:
       - CONSOLE_AUTH_USER=${CONSOLE_AUTH_USER:-}
       - CONSOLE_AUTH_PASS_HASH=${CONSOLE_AUTH_PASS_HASH:-}
       - CONSOLE_ALLOWED_IPS=${CONSOLE_ALLOWED_IPS:-127.0.0.1}
+      # Report-at-rest encryption (security/report_crypto.py). Unset ->
+      # reports are written unencrypted with a logged warning.
+      - REPORT_ENCRYPTION_KEY=${REPORT_ENCRYPTION_KEY:-}
     volumes:
       - ./reports:/app/reports
       - ./logs:/app/logs
@@ -153,6 +157,7 @@ services:
       - HACKPILOT_MODEL=${HACKPILOT_MODEL}
       - SECRET_KEY=${SECRET_KEY}
       - LOG_LEVEL=INFO
+      - REPORT_ENCRYPTION_KEY=${REPORT_ENCRYPTION_KEY:-}
     volumes:
       - ./reports:/app/reports
       - ./logs:/app/logs

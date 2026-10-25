@@ -890,19 +890,28 @@ class DynamicReportGenerator:
         """Export report as PDF (returns file path). Renders the same HTML
         report through WeasyPrint rather than just saving the HTML - this
         previously always silently returned an .html file with a '.pdf'-
-        sounding docstring and no actual PDF was ever produced."""
+        sounding docstring and no actual PDF was ever produced.
+
+        The rendered bytes are handed to security.report_crypto, which
+        encrypts them at rest (returning a '.pdf.enc' path) when
+        REPORT_ENCRYPTION_KEY is configured, or writes plain '.pdf'
+        otherwise - callers read it back with read_report_file()."""
         html_content = self._export_html_report(report_data)
         pdf_path = f"/tmp/report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
 
         try:
             from weasyprint import HTML
-            HTML(string=html_content).write_pdf(pdf_path)
-            return pdf_path
+            pdf_bytes = HTML(string=html_content).write_pdf()
+            from security.report_crypto import write_report_file
+            return write_report_file(pdf_path, pdf_bytes)
         except ImportError:
             self.logger.warning("weasyprint not installed; falling back to HTML export")
         except Exception as e:
             self.logger.error(f"Error exporting PDF report: {e}")
 
+        # Degraded-mode fallback only (weasyprint missing/broken) - left
+        # unencrypted so the download route's existing `.endswith(".html")`
+        # branch keeps working without also having to understand ".html.enc".
         html_path = pdf_path.replace(".pdf", ".html")
         with open(html_path, "w") as f:
             f.write(html_content)
