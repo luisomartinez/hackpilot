@@ -12,6 +12,8 @@ __pycache__/
 
 # Runtime artifacts
 reports/
+evidence/
+output/
 logs/
 *.log
 

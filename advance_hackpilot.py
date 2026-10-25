@@ -2773,9 +2773,10 @@ class EnterprisePentestingPhases:
 
             if self.db:
                 from reporting.cvss_heuristics import estimate_cvss
+                from reporting.evidence_store import save_evidence
                 for finding in subdomain_findings + tech_findings:
                     cvss_vector, cvss_score = estimate_cvss(finding["title"], finding["severity"])
-                    self.db.create_vulnerability(
+                    finding_id = self.db.create_vulnerability(
                         session_id=self.session_id,
                         phase="reconnaissance",
                         severity=finding["severity"],
@@ -2790,6 +2791,7 @@ class EnterprisePentestingPhases:
                         confidence=finding["confidence"],
                         evidence=finding["evidence"],
                     )
+                    save_evidence(self.session_id, finding_id, finding)
 
         execution_time = time.time() - start_time
 
@@ -3010,9 +3012,10 @@ class EnterprisePentestingPhases:
             consolidated_vuln_findings = consolidate(raw_vuln_findings)
             if self.db:
                 from reporting.cvss_heuristics import estimate_cvss
+                from reporting.evidence_store import save_evidence
                 for finding in consolidated_vuln_findings:
                     cvss_vector, cvss_score = estimate_cvss(finding["title"], finding["severity"])
-                    self.db.create_vulnerability(
+                    finding_id = self.db.create_vulnerability(
                         session_id=self.session_id,
                         phase="assessment",
                         severity=finding["severity"],
@@ -3027,6 +3030,7 @@ class EnterprisePentestingPhases:
                         confidence=finding["confidence"],
                         evidence=finding["evidence"],
                     )
+                    save_evidence(self.session_id, finding_id, finding)
 
         execution_time = time.time() - start_time
 
@@ -3221,9 +3225,10 @@ class EnterprisePentestingPhases:
         consolidated_exploit_findings = consolidate(raw_exploit_findings)
         if self.db:
             from reporting.cvss_heuristics import estimate_cvss
+            from reporting.evidence_store import save_evidence
             for finding in consolidated_exploit_findings:
                 cvss_vector, cvss_score = estimate_cvss(finding["title"], finding["severity"])
-                self.db.create_vulnerability(
+                finding_id = self.db.create_vulnerability(
                     session_id=self.session_id,
                     phase="exploitation",
                     severity=finding["severity"],
@@ -3238,6 +3243,7 @@ class EnterprisePentestingPhases:
                     confidence=finding["confidence"],
                     evidence=finding["evidence"],
                 )
+                save_evidence(self.session_id, finding_id, finding)
 
         active_summary = (
             f"Active exploitation against '{target}': ffuf dirs/vhosts, sqlmap on "

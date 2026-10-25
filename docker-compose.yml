@@ -122,6 +122,7 @@ services:
       - REPORT_ENCRYPTION_KEY=${REPORT_ENCRYPTION_KEY:-}
     volumes:
       - ./reports:/app/reports
+      - ./evidence:/app/evidence
       - ./logs:/app/logs
     ports:
       - "8080:8080"  # Web Dashboard
