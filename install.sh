@@ -196,6 +196,19 @@ for tool in subfinder amass nuclei testssl.sh wapiti; do
     install_tool "$tool"
 done
 
+# Sprint 2 active-exploitation tools (gated at runtime by
+# ENABLE_AUTO_EXPLOIT/ENABLE_ADVANCED_EXPLOITATION + ALLOWED_TARGETS -
+# installing the binary doesn't turn anything on by itself).
+# seclists provides the vhost wordlist ffuf's vhost fuzzing defaults to;
+# dirb provides /usr/share/wordlists/dirb/common.txt for directory fuzzing.
+# metasploit-framework is large (~1GB+) - it's the one tool here the
+# operator may reasonably want to skip on a constrained image; it is only
+# ever driven through `check` on auxiliary/scanner modules (msf_check_runner.py).
+echo "[+] Installing Sprint 2 active-exploitation tools..."
+for tool in ffuf dirb seclists metasploit-framework; do
+    install_tool "$tool"
+done
+
 # Local-model provisioning is a user-controlled host action. Baking a daemon and a
 # multi-GB model download into the image build is non-deterministic and makes offline
 # image builds impossible. The Workbench remains usable in deterministic no-AI mode.
