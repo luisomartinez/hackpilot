@@ -98,6 +98,11 @@ xlsxwriter>=3.1.0,<4.0.0
 cvsslib>=1.0.0,<2.0.0
 cve>=1.0.1,<2.0.0
 cpe>=1.2.1,<2.0.0
+# Scores/parses CVSS 3.1 vectors for reporting/cvss_heuristics.py. Separate
+# from cvsslib above (which this project doesn't currently call) - pinned
+# exact per the Sprint 3 spec rather than a range, since this only needs to
+# support the single CVSS3(vector).scores() call site.
+cvss==3.4
 
 # Monitoring & Logging
 prometheus-client>=0.18.0,<1.0.0

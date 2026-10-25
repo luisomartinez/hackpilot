@@ -2772,7 +2772,9 @@ class EnterprisePentestingPhases:
                 tech_findings = []
 
             if self.db:
+                from reporting.cvss_heuristics import estimate_cvss
                 for finding in subdomain_findings + tech_findings:
+                    cvss_vector, cvss_score = estimate_cvss(finding["title"], finding["severity"])
                     self.db.create_vulnerability(
                         session_id=self.session_id,
                         phase="reconnaissance",
@@ -2781,7 +2783,8 @@ class EnterprisePentestingPhases:
                         description=f"Reported by: {', '.join(finding['sources'])}.",
                         proof_of_concept=finding["target"],
                         remediation="Review whether this asset/technology should be internet-facing; confirm it is in scope.",
-                        cvss_score=0.0,
+                        cvss_score=cvss_score,
+                        cvss_vector=cvss_vector,
                         sources=finding["sources"],
                         validated=finding["validated"],
                         confidence=finding["confidence"],
@@ -3006,7 +3009,9 @@ class EnterprisePentestingPhases:
 
             consolidated_vuln_findings = consolidate(raw_vuln_findings)
             if self.db:
+                from reporting.cvss_heuristics import estimate_cvss
                 for finding in consolidated_vuln_findings:
+                    cvss_vector, cvss_score = estimate_cvss(finding["title"], finding["severity"])
                     self.db.create_vulnerability(
                         session_id=self.session_id,
                         phase="assessment",
@@ -3015,7 +3020,8 @@ class EnterprisePentestingPhases:
                         description=f"Reported by: {', '.join(finding['sources'])}.",
                         proof_of_concept=finding["target"],
                         remediation="Review manually and confirm exploitability before prioritizing remediation.",
-                        cvss_score=0.0,
+                        cvss_score=cvss_score,
+                        cvss_vector=cvss_vector,
                         sources=finding["sources"],
                         validated=finding["validated"],
                         confidence=finding["confidence"],
@@ -3214,7 +3220,9 @@ class EnterprisePentestingPhases:
 
         consolidated_exploit_findings = consolidate(raw_exploit_findings)
         if self.db:
+            from reporting.cvss_heuristics import estimate_cvss
             for finding in consolidated_exploit_findings:
+                cvss_vector, cvss_score = estimate_cvss(finding["title"], finding["severity"])
                 self.db.create_vulnerability(
                     session_id=self.session_id,
                     phase="exploitation",
@@ -3223,7 +3231,8 @@ class EnterprisePentestingPhases:
                     description=f"Reported by: {', '.join(finding['sources'])}.",
                     proof_of_concept=finding["target"],
                     remediation="Review manually; validate and remediate before retesting.",
-                    cvss_score=0.0,
+                    cvss_score=cvss_score,
+                    cvss_vector=cvss_vector,
                     sources=finding["sources"],
                     validated=finding["validated"],
                     confidence=finding["confidence"],
