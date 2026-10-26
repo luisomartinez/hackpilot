@@ -3603,7 +3603,11 @@ class EnterpriseWebDashboard:
                         "description": v.description,
                         "proof_of_concept": v.proof_of_concept,
                         "remediation": v.remediation,
-                        "status": v.status
+                        "status": v.status,
+                        "sources": v.sources,
+                        "validated": v.validated,
+                        "confidence": v.confidence,
+                        "evidence": v.evidence
                     } for v in vulns],
                     "phase_results": [{
                         "id": p.id,
@@ -3612,7 +3616,9 @@ class EnterpriseWebDashboard:
                         "status": p.status,
                         "started_at": p.started_at.isoformat() if p.started_at else None,
                         "completed_at": p.completed_at.isoformat() if p.completed_at else None,
-                        "execution_time": p.execution_time
+                        "execution_time": p.execution_time,
+                        "tools_used": p.tools_used,
+                        "ai_analysis": p.ai_analysis
                     } for p in phases]
                 })
             except Exception as e:

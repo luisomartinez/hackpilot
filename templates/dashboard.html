@@ -8,7 +8,7 @@
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Chart.js -->
@@ -97,12 +97,36 @@
                         <div>Running for: <strong id="active-scan-duration">0s</strong></div>
                     </div>
                     <div class="scan-steps">
-                        <div class="scan-step" id="step-1">Recon</div>
-                        <div class="scan-step" id="step-2">Scanning</div>
-                        <div class="scan-step" id="step-3">Vuln Assess</div>
-                        <div class="scan-step" id="step-4">Exploitation</div>
-                        <div class="scan-step" id="step-5">Reporting</div>
-                        <div class="scan-step" id="step-6">Retesting</div>
+                        <div class="scan-step" id="step-1">
+                            <div class="scan-step-icon"><i class="fa-solid fa-satellite-dish"></i></div>
+                            <div class="scan-step-label">Recon</div>
+                            <div class="scan-step-status" id="step-1-status">Pending</div>
+                        </div>
+                        <div class="scan-step" id="step-2">
+                            <div class="scan-step-icon"><i class="fa-solid fa-magnifying-glass-chart"></i></div>
+                            <div class="scan-step-label">Scanning</div>
+                            <div class="scan-step-status" id="step-2-status">Pending</div>
+                        </div>
+                        <div class="scan-step" id="step-3">
+                            <div class="scan-step-icon"><i class="fa-solid fa-bug"></i></div>
+                            <div class="scan-step-label">Vuln Assess</div>
+                            <div class="scan-step-status" id="step-3-status">Pending</div>
+                        </div>
+                        <div class="scan-step" id="step-4">
+                            <div class="scan-step-icon"><i class="fa-solid fa-bolt"></i></div>
+                            <div class="scan-step-label">Exploitation</div>
+                            <div class="scan-step-status" id="step-4-status">Pending</div>
+                        </div>
+                        <div class="scan-step" id="step-5">
+                            <div class="scan-step-icon"><i class="fa-solid fa-file-shield"></i></div>
+                            <div class="scan-step-label">Reporting</div>
+                            <div class="scan-step-status" id="step-5-status">Pending</div>
+                        </div>
+                        <div class="scan-step" id="step-6">
+                            <div class="scan-step-icon"><i class="fa-solid fa-rotate"></i></div>
+                            <div class="scan-step-label">Retesting</div>
+                            <div class="scan-step-status" id="step-6-status">Pending</div>
+                        </div>
                     </div>
                 </div>
 
@@ -300,13 +324,15 @@
                                         <th>Session Target</th>
                                         <th>Severity</th>
                                         <th>CVSS</th>
+                                        <th>Confidence</th>
+                                        <th>Sources</th>
                                         <th>Discover Phase</th>
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="vulnerabilities-table-body">
                                     <tr>
-                                        <td colspan="6" style="text-align: center; color: var(--text-muted);">No vulnerabilities found. Start a scan to view results.</td>
+                                        <td colspan="8" style="text-align: center; color: var(--text-muted);">No vulnerabilities found. Start a scan to view results.</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -463,12 +489,24 @@
                         <div class="meta-value" id="modal-vuln-severity">Critical</div>
                     </div>
                     <div class="meta-item">
-                        <div class="meta-label">CVSS 3.1</div>
+                        <div class="meta-label">CVSS 3.1 Score</div>
                         <div class="meta-value" id="modal-vuln-cvss">9.8</div>
                     </div>
                     <div class="meta-item">
                         <div class="meta-label">Discover Phase</div>
                         <div class="meta-value" id="modal-vuln-phase">Scanning</div>
+                    </div>
+                    <div class="meta-item">
+                        <div class="meta-label">Confidence</div>
+                        <div class="meta-value" id="modal-vuln-confidence">—</div>
+                    </div>
+                    <div class="meta-item meta-wide">
+                        <div class="meta-label">CVSS 3.1 Vector</div>
+                        <div class="meta-value mono" id="modal-vuln-vector">—</div>
+                    </div>
+                    <div class="meta-item meta-wide">
+                        <div class="meta-label">Reported By</div>
+                        <div class="meta-sources" id="modal-vuln-sources">—</div>
                     </div>
                 </div>
 
@@ -550,9 +588,9 @@
                     labels: ['Critical', 'High', 'Medium', 'Low', 'Info'],
                     datasets: [{
                         data: [0, 0, 0, 0, 0],
-                        backgroundColor: ['#ff3366', '#ffcc00', '#00e5ff', '#00ff66', '#9b51e0'],
+                        backgroundColor: ['#ef5a6f', '#f2994a', '#f0c952', '#6fb3e0', '#8993a5'],
                         borderWidth: 1,
-                        borderColor: '#161b22'
+                        borderColor: '#141a24'
                     }]
                 },
                 options: {
@@ -561,7 +599,7 @@
                     plugins: {
                         legend: {
                             position: 'bottom',
-                            labels: { color: '#c9d1d9', font: { family: 'Inter', size: 11 } }
+                            labels: { color: '#e6e9ef', font: { family: 'Inter', size: 11 } }
                         }
                     }
                 }
@@ -577,8 +615,8 @@
                         {
                             label: 'Total Findings',
                             data: [],
-                            borderColor: '#00e5ff',
-                            backgroundColor: 'rgba(0, 229, 255, 0.1)',
+                            borderColor: '#6c8cff',
+                            backgroundColor: 'rgba(108, 140, 255, 0.12)',
                             borderWidth: 2,
                             fill: true,
                             tension: 0.3
@@ -586,8 +624,8 @@
                         {
                             label: 'Critical Findings',
                             data: [],
-                            borderColor: '#ff3366',
-                            backgroundColor: 'rgba(255, 51, 102, 0.1)',
+                            borderColor: '#ef5a6f',
+                            backgroundColor: 'rgba(239, 90, 111, 0.1)',
                             borderWidth: 2,
                             fill: false,
                             tension: 0.1
@@ -599,17 +637,17 @@
                     maintainAspectRatio: false,
                     scales: {
                         x: {
-                            grid: { color: '#161b22' },
-                            ticks: { color: '#8b949e', font: { family: 'Inter' } }
+                            grid: { color: '#232c3a' },
+                            ticks: { color: '#8993a5', font: { family: 'Inter' } }
                         },
                         y: {
-                            grid: { color: '#161b22' },
-                            ticks: { color: '#8b949e', font: { family: 'Inter' } }
+                            grid: { color: '#232c3a' },
+                            ticks: { color: '#8993a5', font: { family: 'Inter' } }
                         }
                     },
                     plugins: {
                         legend: {
-                            labels: { color: '#c9d1d9', font: { family: 'Inter' } }
+                            labels: { color: '#e6e9ef', font: { family: 'Inter' } }
                         }
                     }
                 }
@@ -734,17 +772,27 @@
             });
 
             if (filtered.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No matching vulnerabilities found.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">No matching vulnerabilities found.</td></tr>`;
                 return;
             }
 
             filtered.forEach(v => {
+                const sources = Array.isArray(v.sources) ? v.sources : [];
+                const sourcesHtml = sources.length
+                    ? sources.map(s => `<span class="pill pill-source">${escapeHtml(s)}</span>`).join(' ')
+                    : '<span style="color: var(--text-faint);">—</span>';
+                const confidenceHtml = v.confidence
+                    ? `<span class="pill ${v.validated ? 'pill-validated' : (v.confidence === 'high' ? 'pill-confidence-high' : '')}">${v.validated ? '<i class="fa-solid fa-check"></i> ' : ''}${escapeHtml(v.confidence)}</span>`
+                    : '<span style="color: var(--text-faint);">—</span>';
+
                 tbody.innerHTML += `
                     <tr>
                         <td><strong>${escapeHtml(v.title)}</strong></td>
                         <td>${escapeHtml(v.target || 'Unknown target')}</td>
                         <td><span class="badge badge-${v.severity}">${escapeHtml(v.severity)}</span></td>
-                        <td><strong>${v.cvss_score || 'N/A'}</strong></td>
+                        <td><strong>${v.cvss_score != null ? v.cvss_score : 'N/A'}</strong></td>
+                        <td>${confidenceHtml}</td>
+                        <td>${sourcesHtml}</td>
                         <td style="text-transform: capitalize;">${escapeHtml(v.phase || 'scanning')}</td>
                         <td>
                             <button class="btn btn-secondary btn-sm" onclick="openVulnModal('${v.id}')">
@@ -965,12 +1013,16 @@
                     // Highlight steps
                     for (let i = 1; i <= 6; i++) {
                         const stepEl = document.getElementById(`step-${i}`);
+                        const statusEl = document.getElementById(`step-${i}-status`);
                         if (i <= completedPhases) {
                             stepEl.className = 'scan-step completed';
+                            if (statusEl) statusEl.innerText = 'Completed';
                         } else if (runningPhase && runningPhase.phase_number === i) {
                             stepEl.className = 'scan-step active';
+                            if (statusEl) statusEl.innerText = 'Running';
                         } else {
                             stepEl.className = 'scan-step';
+                            if (statusEl) statusEl.innerText = 'Pending';
                         }
                     }
 
@@ -985,36 +1037,42 @@
                 .catch(err => console.error("Error polling active scan status:", err));
         }
 
-        // Add dummy terminal logs to look awesome and diagnostic
-        let lastLoggedPhaseNum = 0;
+        // Real terminal logs, built only from what the backend actually did -
+        // each phase's tools_used (set when the phase starts) and ai_analysis
+        // (the honest summary each phase writes when it finishes - e.g. "Live
+        // nmap reconnaissance against 'x': 3 open port(s) detected." or
+        // "Exploitation skipped for 'x': safe mode is active..."). Nothing
+        // here is scripted flavor text - if a phase found nothing, the log
+        // says so.
+        const startedPhaseLogs = new Set();
+        const completedPhaseLogs = new Set();
         function updateTerminalSessionLogs(sessionData) {
             const results = sessionData.phase_results || [];
-            const runningPhase = results.find(r => r.status === 'running');
-            const phaseNum = runningPhase ? runningPhase.phase_number : results.filter(r => r.status === 'completed').length;
-            
-            if (phaseNum > lastLoggedPhaseNum) {
-                lastLoggedPhaseNum = phaseNum;
+            if (results.length > 0) {
                 document.getElementById('terminal-session-label').innerText = `Session: ${sessionData.session_id.substring(0,8)}...`;
-                
-                if (phaseNum === 1) {
-                    addTerminalLog("Scanner", `Initiating reconnaissance phase on target ${sessionData.target}...`, "cmd");
-                    addTerminalLog("Nmap", "Running service discovery and OS detection: nmap -sS -sV -O -p- --min-rate 1000...", "info");
-                } else if (phaseNum === 2) {
-                    addTerminalLog("Scanner", "Phase 1 Completed. Phase 2 Advanced Enumeration initiated...", "cmd");
-                    addTerminalLog("Nikto", "Starting web server scanning for vulnerability headers...", "info");
-                    addTerminalLog("GoBuster", "Brute-forcing common directories and API paths...", "info");
-                } else if (phaseNum === 3) {
-                    addTerminalLog("AI-Engine", "Analyzing exposed paths. Cross-checking with CVE databases...", "warn");
-                    addTerminalLog("Scanner", "Vulnerability assessment launched. Querying web vulnerabilities...", "cmd");
-                } else if (phaseNum === 4) {
-                    addTerminalLog("Exploitation", "SQL Injection vulnerabilities confirmed. Constructing safe database PoC...", "warn");
-                    addTerminalLog("AI-Engine", "RCE possibility detected on service endpoint. Testing zero-day vulnerability payload...", "error");
-                } else if (phaseNum === 5) {
-                    addTerminalLog("Reporter", "Consolidating findings. Generating PDF and compliance checklists...", "info");
-                } else if (phaseNum === 6) {
-                    addTerminalLog("Scanner", "Verifying patches. Attempting re-exploitation of reported findings...", "cmd");
-                }
             }
+
+            results.forEach(phase => {
+                const key = `${sessionData.session_id}:${phase.phase_number}`;
+
+                if ((phase.status === 'running' || phase.status === 'completed') && !startedPhaseLogs.has(key)) {
+                    startedPhaseLogs.add(key);
+                    const tools = Array.isArray(phase.tools_used) && phase.tools_used.length
+                        ? phase.tools_used.join(', ')
+                        : 'no tools configured';
+                    addTerminalLog(phase.phase_name || `Phase ${phase.phase_number}`, `Started - tools: ${tools}`, 'cmd');
+                }
+
+                if (phase.status === 'completed' && !completedPhaseLogs.has(key)) {
+                    completedPhaseLogs.add(key);
+                    const summary = phase.ai_analysis || 'Completed - no summary recorded.';
+                    const tone = /skipped|inconclusive|failed|no results|not implemented/i.test(summary) ? 'warn' : 'info';
+                    addTerminalLog(phase.phase_name || `Phase ${phase.phase_number}`, summary, tone);
+                } else if (phase.status === 'failed' && !completedPhaseLogs.has(key)) {
+                    completedPhaseLogs.add(key);
+                    addTerminalLog(phase.phase_name || `Phase ${phase.phase_number}`, phase.ai_analysis || 'Phase failed.', 'error');
+                }
+            });
         }
 
         function addTerminalLog(source, message, type) {
@@ -1066,7 +1124,8 @@
                     document.getElementById('start-scan-form').reset();
                     
                     // Refresh stats
-                    lastLoggedPhaseNum = 0;
+                    startedPhaseLogs.clear();
+                    completedPhaseLogs.clear();
                     setTimeout(fetchDashboardData, 1000);
                 } else {
                     alert("Error: " + (data.message || "Failed to start. Check API logs."));
@@ -1162,9 +1221,22 @@
             document.getElementById('modal-vuln-title').innerText = v.title;
             document.getElementById('modal-vuln-severity').innerText = v.severity;
             document.getElementById('modal-vuln-severity').className = `meta-value badge badge-${v.severity}`;
-            document.getElementById('modal-vuln-cvss').innerText = v.cvss_score || 'N/A';
+            document.getElementById('modal-vuln-cvss').innerText = v.cvss_score != null ? v.cvss_score : 'N/A';
             document.getElementById('modal-vuln-phase').innerText = v.phase || 'Scanning';
-            
+            document.getElementById('modal-vuln-vector').innerText = v.cvss_vector || 'Not scored';
+
+            const confidenceEl = document.getElementById('modal-vuln-confidence');
+            if (v.confidence) {
+                confidenceEl.innerHTML = `<span class="pill ${v.validated ? 'pill-validated' : ''}">${v.validated ? '<i class="fa-solid fa-check"></i> ' : ''}${escapeHtml(v.confidence)}${v.validated ? ' (validated)' : ''}</span>`;
+            } else {
+                confidenceEl.innerText = 'Not assessed';
+            }
+
+            const sources = Array.isArray(v.sources) ? v.sources : [];
+            document.getElementById('modal-vuln-sources').innerHTML = sources.length
+                ? sources.map(s => `<span class="pill pill-source">${escapeHtml(s)}</span>`).join(' ')
+                : '<span style="color: var(--text-faint);">Single-tool finding (nmap/nikto)</span>';
+
             document.getElementById('modal-vuln-desc').innerText = v.description || 'No description provided.';
             document.getElementById('modal-vuln-poc').innerText = v.proof_of_concept || 'No Proof of Concept payload provided.';
             document.getElementById('modal-vuln-remediation').innerText = v.remediation || 'Upgrade software packages and implement proper security controls.';
