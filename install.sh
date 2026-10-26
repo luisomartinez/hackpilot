@@ -196,11 +196,25 @@ for tool in subfinder amass nuclei testssl.sh wapiti; do
     install_tool "$tool"
 done
 
+# nuclei's own runtime template update (`nuclei -ut`, called once per Phase 3
+# run from nuclei_runner.py) is unreliable in this environment - confirmed
+# against a real target it silently fetched zero templates ("context deadline
+# exceeded... while reading body") even with network egress working fine.
+# Bundle the templates at build time instead so a scan always has something
+# to run even if the runtime update keeps failing; nuclei_runner.py's -ut
+# call still runs too, as a best-effort refresh on top of this baseline.
+echo "[+] Bundling nuclei-templates (runtime -ut is unreliable here)..."
+git clone --depth 1 https://github.com/projectdiscovery/nuclei-templates.git \
+    /root/.local/nuclei-templates \
+    || warn "Could not clone nuclei-templates - nuclei will have no templates until 'nuclei -ut' succeeds at runtime"
+
 # Sprint 2 active-exploitation tools (gated at runtime by
 # ENABLE_AUTO_EXPLOIT/ENABLE_ADVANCED_EXPLOITATION + ALLOWED_TARGETS -
 # installing the binary doesn't turn anything on by itself).
-# seclists provides the vhost wordlist ffuf's vhost fuzzing defaults to;
-# dirb provides /usr/share/wordlists/dirb/common.txt for directory fuzzing.
+# seclists installs under /usr/share/seclists/ (ffuf_runner.py's vhost
+# wordlist default); dirb installs under /usr/share/dirb/wordlists/
+# (ffuf_runner.py's dir-fuzzing default) - confirmed via `dpkg -L`, neither
+# package uses /usr/share/wordlists/.
 # metasploit-framework is large (~1GB+) - it's the one tool here the
 # operator may reasonably want to skip on a constrained image; it is only
 # ever driven through `check` on auxiliary/scanner modules (msf_check_runner.py).

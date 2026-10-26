@@ -115,7 +115,7 @@ def test_phase3_persists_consolidated_nuclei_testssl_wapiti_findings():
     tm = FakeToolManager({
         "nikto": {"stdout": ""},
         "nuclei": {"stdout": nuclei_line + "\n"},
-        "testssl.sh": {"json_file": [{"id": "BEAST", "severity": "MEDIUM", "finding": "vulnerable", "port": "443"}]},
+        "testssl": {"json_file": [{"id": "BEAST", "severity": "MEDIUM", "finding": "vulnerable", "port": "443"}]},
         "wapiti": {"json_file": {"vulnerabilities": {"SQL Injection": [{"info": "id param", "path": "/a"}]}}},
     })
     db = FakeDB()
@@ -135,4 +135,4 @@ def test_phase3_skips_new_tools_without_web_service_like_nikto_does():
     phases = _phases(tm, db)
     phases.results["phase1_reconnaissance"] = {"open_ports": []}
     phases.phase3_vulnerability_assessment()
-    assert not any(c[0] in ("nuclei", "testssl.sh", "wapiti") for c in tm.calls)
+    assert not any(c[0] in ("nuclei", "testssl", "wapiti") for c in tm.calls)

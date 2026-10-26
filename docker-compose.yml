@@ -66,6 +66,12 @@ services:
       - LOG_LEVEL=INFO
       - ENABLE_API_SERVER=true
       - REPORT_ENCRYPTION_KEY=${REPORT_ENCRYPTION_KEY:-}
+      - ENABLE_AUTO_EXPLOIT=${ENABLE_AUTO_EXPLOIT:-false}
+      - ENABLE_ADVANCED_EXPLOITATION=${ENABLE_ADVANCED_EXPLOITATION:-false}
+      - ALLOWED_TARGETS=${ALLOWED_TARGETS:-}
+      - USE_AI=${USE_AI:-false}
+      - LOCAL_LLM_ENDPOINT=${LOCAL_LLM_ENDPOINT:-http://localhost:11434}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-llama3.3:70b}
     volumes:
       - ./reports:/app/reports
       - ./logs:/app/logs
@@ -120,6 +126,18 @@ services:
       # Report-at-rest encryption (security/report_crypto.py). Unset ->
       # reports are written unencrypted with a logged warning.
       - REPORT_ENCRYPTION_KEY=${REPORT_ENCRYPTION_KEY:-}
+      # Phase 4 active-exploitation gates (advance_hackpilot.py +
+      # security/target_allowlist.py). All default closed/false - without
+      # explicit opt-in here, sqlmap/ffuf/Metasploit never run.
+      - ENABLE_AUTO_EXPLOIT=${ENABLE_AUTO_EXPLOIT:-false}
+      - ENABLE_ADVANCED_EXPLOITATION=${ENABLE_ADVANCED_EXPLOITATION:-false}
+      - ALLOWED_TARGETS=${ALLOWED_TARGETS:-}
+      # Sprint 3.5 local-only AI triage/attack narrative (ai_engine/triage.py,
+      # ai_engine/attack_narrative.py) - only ever calls the Ollama endpoint
+      # below, never a remote provider.
+      - USE_AI=${USE_AI:-false}
+      - LOCAL_LLM_ENDPOINT=${LOCAL_LLM_ENDPOINT:-http://localhost:11434}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-llama3.3:70b}
     volumes:
       - ./reports:/app/reports
       - ./evidence:/app/evidence
@@ -160,6 +178,12 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - LOG_LEVEL=INFO
       - REPORT_ENCRYPTION_KEY=${REPORT_ENCRYPTION_KEY:-}
+      - ENABLE_AUTO_EXPLOIT=${ENABLE_AUTO_EXPLOIT:-false}
+      - ENABLE_ADVANCED_EXPLOITATION=${ENABLE_ADVANCED_EXPLOITATION:-false}
+      - ALLOWED_TARGETS=${ALLOWED_TARGETS:-}
+      - USE_AI=${USE_AI:-false}
+      - LOCAL_LLM_ENDPOINT=${LOCAL_LLM_ENDPOINT:-http://localhost:11434}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-llama3.3:70b}
     volumes:
       - ./reports:/app/reports
       - ./logs:/app/logs

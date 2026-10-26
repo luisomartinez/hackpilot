@@ -76,6 +76,25 @@ def test_run_whatweb_parses_default_plugin_output():
     assert not any("IP" in f["title"] or "Title" in f["title"] for f in findings)
 
 
+def test_run_whatweb_strips_ansi_color_codes():
+    # Confirmed against a real target: whatweb emits ANSI codes even with
+    # --aggression set, and without stripping them _PLUGIN_RE parsed garbage
+    # like "Technology detected: 1mApache".
+    colored = (
+        "http://x.com [200 OK] \x1b[1m\x1b[32mApache\x1b[0m[\x1b[1m\x1b[32m2.4.52\x1b[0m], "
+        "\x1b[1m\x1b[36mTitle\x1b[0m[\x1b[0m\x1b[22mHome\x1b[0m]\n"
+    )
+    tm = FakeToolManager({"whatweb": {"stdout": colored}})
+    findings = run_whatweb(tm, ["x.com"])
+    assert findings == [{
+        "title": "Technology detected: Apache 2.4.52",
+        "target": "http://x.com",
+        "source": "whatweb",
+        "severity": "info",
+        "evidence": {"url": "http://x.com", "name": "Apache", "version": "2.4.52"},
+    }]
+
+
 def test_run_nuclei_parses_jsonl_and_clamps_unknown_severity():
     line1 = json.dumps({
         "template-id": "CVE-2021-1234", "info": {"name": "Example Vuln", "severity": "high"},
@@ -97,7 +116,7 @@ def test_update_nuclei_templates_reports_success_flag():
 
 
 def test_run_testssl_reads_jsonfile_and_skips_ok_entries():
-    tm = FakeToolManager({"testssl.sh": {"success": True, "json_file": [
+    tm = FakeToolManager({"testssl": {"success": True, "json_file": [
         {"id": "TLS1", "severity": "OK", "finding": "fine", "port": "443"},
         {"id": "heartbleed", "severity": "CRITICAL", "finding": "vulnerable", "port": "443"},
     ]}})
