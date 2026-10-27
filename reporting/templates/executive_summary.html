@@ -5,11 +5,11 @@
     <title>Executive Summary - {{ report_data.title }}</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; background: #f8f9fa; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                  color: white; padding: 30px; border-radius: 10px; margin-bottom: 30px; }
-        .summary-box { background: white; padding: 25px; border-radius: 8px; 
+        .summary-box { background: white; padding: 25px; border-radius: 8px;
                       box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin: 20px 0; }
-        .metric { display: inline-block; margin: 15px 20px 15px 0; text-align: center; 
+        .metric { display: inline-block; margin: 15px 20px 15px 0; text-align: center;
                  background: #f1f3f4; padding: 20px; border-radius: 8px; min-width: 120px; }
         .metric h3 { margin: 0; color: #1a73e8; font-size: 2em; }
         .metric p { margin: 5px 0 0 0; color: #5f6368; font-weight: 500; }
@@ -19,7 +19,7 @@
         .risk-low { color: #137333; font-weight: bold; }
         .chart-container { text-align: center; margin: 30px 0; }
         .chart-container img { max-width: 100%; height: auto; border-radius: 8px; }
-        .recommendation { background: #e8f5e8; border-left: 4px solid #137333; 
+        .recommendation { background: #e8f5e8; border-left: 4px solid #137333;
                          padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }
         .finding { background: #fff3cd; border-left: 4px solid #f9ab00;
                   padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }
@@ -30,6 +30,42 @@
         .annex th { background: #f1f3f4; color: #5f6368; }
         .annex pre { background: #f1f3f4; padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; font-size: 0.8em; }
         .checksum-note { color: #5f6368; font-size: 0.85em; margin-top: 30px; border-top: 1px solid #e0e0e0; padding-top: 10px; }
+
+        .phase-card { background: white; padding: 22px 25px; border-radius: 8px;
+                      box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin: 16px 0;
+                      page-break-inside: avoid; }
+        .phase-card h3 { margin: 0 0 4px; color: #1a1f27; }
+        .phase-meta { color: #5f6368; font-size: 0.85em; margin-bottom: 10px; }
+        .status-pill { display: inline-block; padding: 2px 10px; border-radius: 999px;
+                        font-size: 0.75em; font-weight: 700; text-transform: uppercase;
+                        background: #e6f4ea; color: #137333; }
+        .status-pill.not-completed { background: #fce8e6; color: #c5221f; }
+        .tool-chip { display: inline-block; background: #eef1ff; color: #3949ab;
+                     border-radius: 4px; padding: 2px 8px; margin: 2px 4px 2px 0;
+                     font-size: 0.8em; font-family: 'Courier New', monospace; }
+        .cmd-block { background: #11151c; color: #9fd8a6; border-radius: 6px;
+                     padding: 10px 14px; margin: 6px 0; font-family: 'Courier New', monospace;
+                     font-size: 0.78em; white-space: pre-wrap; word-break: break-all; }
+        .ai-note { background: #f1f3f4; border-radius: 6px; padding: 10px 14px;
+                   margin-top: 10px; font-size: 0.9em; color: #3c4043; }
+
+        .findings-section { background: white; padding: 22px 25px; border-radius: 8px;
+                             box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin: 16px 0;
+                             page-break-inside: avoid; }
+        .findings-section table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
+        .findings-section th, .findings-section td { text-align: left; padding: 6px 8px;
+                             border-bottom: 1px solid #e8eaed; vertical-align: top; }
+        .findings-section th { background: #f1f3f4; color: #5f6368; text-transform: uppercase;
+                                font-size: 0.75em; letter-spacing: 0.03em; }
+        .sev-badge { display: inline-block; padding: 1px 8px; border-radius: 999px;
+                     font-size: 0.78em; font-weight: 700; color: white; }
+        .sev-critical { background: #c5221f; }
+        .sev-high { background: #e8710a; }
+        .sev-medium { background: #b58b00; }
+        .sev-low { background: #1a73e8; }
+        .sev-info { background: #80868b; }
+        .poc-cell { font-family: 'Courier New', monospace; font-size: 0.85em;
+                    white-space: pre-wrap; word-break: break-word; max-width: 320px; }
     </style>
 </head>
 <body>
@@ -38,7 +74,7 @@
         <p>Generated: {{ report_data.generated_at }}</p>
         <p>Target: {{ report_data.target }}</p>
     </div>
-    
+
     <div class="summary-box">
         <h2>Executive Summary</h2>
         <div class="metrics">
@@ -59,14 +95,14 @@
                 <p>Risk Score</p>
             </div>
         </div>
-        
+
         {% if severity_chart %}
         <div class="chart-container">
             <h3>Vulnerability Distribution</h3>
             <img src="{{ severity_chart }}" alt="Vulnerability Severity Chart">
         </div>
         {% endif %}
-        
+
         <h3>Key Findings</h3>
         {% for finding in key_findings %}
         <div class="finding">
@@ -74,7 +110,7 @@
             {{ finding.description }}
         </div>
         {% endfor %}
-        
+
         <h3>Priority Recommendations</h3>
         {% for recommendation in recommendations %}
         <div class="recommendation">
@@ -90,23 +126,63 @@
     </div>
     {% endif %}
 
-    {% if annexes %}
-    <div class="annex">
-        <h2>Annex A &mdash; Tools Executed per Phase</h2>
-        {% if annexes.phase_tools %}
-        <table>
-            <tr><th>Phase</th><th>Tools used</th></tr>
-            {% for phase in annexes.phase_tools %}
-            <tr><td>{{ phase.phase_name }}</td><td>{{ phase.tools_used|join(', ') }}</td></tr>
-            {% endfor %}
-        </table>
+    {% if phase_detail %}
+    <h2>Phase-by-Phase Execution Detail</h2>
+    <p style="color:#5f6368;">Every phase of the 6-phase methodology that ran in this session: the tools invoked, the exact commands executed against the target, the engine's own analysis of the outcome, and how long it took.</p>
+    {% for phase in phase_detail %}
+    <div class="phase-card">
+        <h3>{{ phase.phase_name }}</h3>
+        <div class="phase-meta">
+            <span class="status-pill {{ '' if phase.status == 'completed' else 'not-completed' }}">{{ phase.status }}</span>
+            {% if phase.execution_time %} &middot; {{ "%.1f"|format(phase.execution_time) }}s{% endif %}
+        </div>
+        {% if phase.tools_used %}
+        <div>
+            {% for tool in phase.tools_used %}<span class="tool-chip">{{ tool }}</span>{% endfor %}
+        </div>
+        {% endif %}
+        {% if phase.commands_used %}
+        {% for cmd in phase.commands_used %}
+        <div class="cmd-block">{{ cmd }}</div>
+        {% endfor %}
         {% else %}
-        <p>No phase execution data available for this session.</p>
+        <p style="color:#5f6368; font-size:0.85em; margin:6px 0 0;">No shell commands were recorded for this phase (e.g. it was skipped by safe-mode gating, or runs report/diff logic rather than external tools).</p>
+        {% endif %}
+        {% if phase.ai_analysis %}
+        <div class="ai-note">{{ phase.ai_analysis }}</div>
         {% endif %}
     </div>
+    {% endfor %}
+    {% endif %}
 
+    {% if findings_by_phase %}
+    <h2>Complete Findings, by Phase</h2>
+    <p style="color:#5f6368;">Every finding recorded in this session - not only the top items summarized above. Includes raw inventory data (discovered subdomains, open ports, detected technologies) alongside confirmed vulnerabilities.</p>
+    {% for phase, findings in findings_by_phase.items() %}
+    <div class="findings-section">
+        <h3>{{ phase | capitalize }} ({{ findings|length }} finding{{ 's' if findings|length != 1 else '' }})</h3>
+        <table>
+            <tr>
+                <th>Severity</th><th>Title</th><th>CVSS</th><th>Sources</th><th>Validated</th><th>Evidence / Target</th>
+            </tr>
+            {% for f in findings %}
+            <tr>
+                <td><span class="sev-badge sev-{{ (f.severity or 'info')|lower }}">{{ f.severity }}</span></td>
+                <td>{{ f.title }}</td>
+                <td>{{ f.cvss_score if f.cvss_score is not none else '-' }}{% if f.cvss_vector %}<br><span style="color:#80868b;font-size:0.85em;">{{ f.cvss_vector }}</span>{% endif %}</td>
+                <td>{{ (f.sources or [])|join(', ') or '-' }}</td>
+                <td>{{ 'yes' if f.validated else 'no' }}</td>
+                <td class="poc-cell">{{ f.target }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if annexes %}
     <div class="annex">
-        <h2>Annex B &mdash; Subdomains Discovered</h2>
+        <h2>Annex A &mdash; Subdomains Discovered</h2>
         {% if annexes.subdomains %}
         <table>
             <tr><th>Subdomain</th></tr>
@@ -120,7 +196,7 @@
     </div>
 
     <div class="annex">
-        <h2>Annex C &mdash; Raw Tool Output Excerpts</h2>
+        <h2>Annex B &mdash; Raw Tool Output Excerpts</h2>
         {% if annexes.raw_excerpts %}
         {% for item in annexes.raw_excerpts %}
         <p><strong>{{ item.source }}</strong> &mdash; {{ item.title }}</p>

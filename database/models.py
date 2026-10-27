@@ -74,6 +74,7 @@ class PhaseResult(Base):
     results = Column(JSON)
     ai_analysis = Column(Text)
     tools_used = Column(JSON)
+    commands_used = Column(JSON)  # exact argv strings run by this phase, for reporting
     execution_time = Column(Float)  # seconds
     
     # Relationships

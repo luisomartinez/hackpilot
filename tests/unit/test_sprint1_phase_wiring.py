@@ -7,13 +7,14 @@ phase behavior when not explicitly asked to).
 
 import json
 
-from advance_hackpilot import EnterprisePentestingPhases
+from advance_hackpilot import EnterprisePentestingPhases, cancellation_registry
 
 
 class FakeToolManager:
     def __init__(self, canned):
         self.canned = canned
         self.calls = []
+        self.command_log = []
 
     def run_command(self, args, timeout=None):
         self.calls.append(list(args))
@@ -24,7 +25,9 @@ class FakeToolManager:
                     out_path = args[args.index(flag) + 1]
                     with open(out_path, "w", encoding="utf-8") as f:
                         json.dump(spec["json_file"], f)
-        return {"success": spec.get("success", True), "stdout": spec.get("stdout", ""), "stderr": spec.get("stderr", "")}
+        outcome = {"success": spec.get("success", True), "stdout": spec.get("stdout", ""), "stderr": spec.get("stderr", "")}
+        self.command_log.append({"command": " ".join(args), "success": outcome["success"]})
+        return outcome
 
 
 class FakeDB:
@@ -32,13 +35,15 @@ class FakeDB:
         self.vulnerabilities = []
         self.phase_results = {}
 
-    def create_phase_result(self, session_id, phase_name, phase_number, results, ai_analysis=None, tools_used=None):
+    def create_phase_result(self, session_id, phase_name, phase_number, results, ai_analysis=None, tools_used=None, commands_used=None):
         rid = f"phase-{phase_number}"
-        self.phase_results[rid] = {"tools_used": tools_used, "status": "running"}
+        self.phase_results[rid] = {"tools_used": tools_used, "commands_used": commands_used, "status": "running"}
         return rid
 
-    def update_phase_result(self, result_id, status, completed_at=None, results=None, ai_analysis=None, execution_time=None):
+    def update_phase_result(self, result_id, status, completed_at=None, results=None, ai_analysis=None, execution_time=None, commands_used=None):
         self.phase_results[result_id]["status"] = status
+        if commands_used is not None:
+            self.phase_results[result_id]["commands_used"] = commands_used
 
     def create_vulnerability(self, session_id, phase, severity, title, description,
                               cvss_score=None, cvss_vector=None, proof_of_concept=None,
@@ -86,6 +91,33 @@ def test_phase1_persists_consolidated_subdomain_and_tech_findings():
     assert titles["Subdomain discovered: api.x.com"]["sources"] == ["amass", "subfinder"]
     assert titles["Subdomain discovered: api.x.com"]["confidence"] == "info"  # passive-only
     assert "Technology detected: nginx 1.18.0" in titles
+
+
+def test_phase1_stops_launching_new_tools_once_session_is_cancelled():
+    """Real bug, confirmed live: cancelling a session used to only flip the
+    DB status while the phase kept launching its remaining tools (amass
+    killed mid-run -> whatweb started next anyway). Once cancelled, no
+    tool past the one already in flight when cancel was requested should
+    start."""
+    tm = FakeToolManager({
+        "nmap": {"stdout": "80/tcp open http Apache\n"},
+        "subfinder": {"stdout": "api.x.com\n"},
+        "amass": {"stdout": "api.x.com\n"},
+        "whatweb": {"stdout": "http://api.x.com [200 OK] nginx[1.18.0]\n"},
+    })
+    db = FakeDB()
+    cancellation_registry.request("s1")
+    try:
+        result = _phases(tm, db).phase1_reconnaissance()
+    finally:
+        cancellation_registry.clear("s1")
+
+    called_tools = {c[0] for c in tm.calls}
+    # nmap has no pre-check (cancellation is only ever requested after a
+    # phase has started, never before), but subfinder/amass/whatweb must
+    # not run once cancelled.
+    assert called_tools == {"nmap"}
+    assert result["subdomains"] == []
 
 
 def test_phase1_recon_tool_failure_does_not_abort_the_phase():

@@ -471,102 +471,16 @@ class DynamicReportGenerator:
         self.trend_analyzer = TrendAnalyzer()
         self.logger = logging.getLogger(__name__)
 
-        # Initialize Jinja2 environment
+        # Initialize Jinja2 environment. executive_summary.html is a real,
+        # version-controlled template under templates/ - it used to get
+        # clobbered on every startup by a hardcoded fallback string here
+        # (_create_default_templates), silently reverting any template
+        # changes (e.g. the phase/command/findings detail sections) back to
+        # a bare-bones version. That bootstrap write has been removed; the
+        # committed template file is now the single source of truth.
         template_dir = os.path.join(os.path.dirname(__file__), "templates")
         os.makedirs(template_dir, exist_ok=True)
         self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
-
-        # Create default templates
-        self._create_default_templates()
-
-    def _create_default_templates(self):
-        """Create default report templates"""
-        templates_dir = os.path.join(os.path.dirname(__file__), "templates")
-
-        # Executive Summary Template
-        executive_template = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Executive Summary - {{ report_data.title }}</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background: #f8f9fa; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                 color: white; padding: 30px; border-radius: 10px; margin-bottom: 30px; }
-        .summary-box { background: white; padding: 25px; border-radius: 8px; 
-                      box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin: 20px 0; }
-        .metric { display: inline-block; margin: 15px 20px 15px 0; text-align: center; 
-                 background: #f1f3f4; padding: 20px; border-radius: 8px; min-width: 120px; }
-        .metric h3 { margin: 0; color: #1a73e8; font-size: 2em; }
-        .metric p { margin: 5px 0 0 0; color: #5f6368; font-weight: 500; }
-        .risk-critical { color: #d93025; font-weight: bold; }
-        .risk-high { color: #f9ab00; font-weight: bold; }
-        .risk-medium { color: #ff6d00; font-weight: bold; }
-        .risk-low { color: #137333; font-weight: bold; }
-        .chart-container { text-align: center; margin: 30px 0; }
-        .chart-container img { max-width: 100%; height: auto; border-radius: 8px; }
-        .recommendation { background: #e8f5e8; border-left: 4px solid #137333; 
-                         padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }
-        .finding { background: #fff3cd; border-left: 4px solid #f9ab00; 
-                  padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>{{ report_data.title }}</h1>
-        <p>Generated: {{ report_data.generated_at }}</p>
-        <p>Target: {{ report_data.target }}</p>
-    </div>
-    
-    <div class="summary-box">
-        <h2>Executive Summary</h2>
-        <div class="metrics">
-            <div class="metric">
-                <h3>{{ metrics.total_vulnerabilities }}</h3>
-                <p>Total Vulnerabilities</p>
-            </div>
-            <div class="metric">
-                <h3 class="risk-critical">{{ metrics.critical_count }}</h3>
-                <p>Critical Risk</p>
-            </div>
-            <div class="metric">
-                <h3 class="risk-high">{{ metrics.high_count }}</h3>
-                <p>High Risk</p>
-            </div>
-            <div class="metric">
-                <h3>{{ metrics.overall_risk_score }}/10</h3>
-                <p>Risk Score</p>
-            </div>
-        </div>
-        
-        {% if severity_chart %}
-        <div class="chart-container">
-            <h3>Vulnerability Distribution</h3>
-            <img src="{{ severity_chart }}" alt="Vulnerability Severity Chart">
-        </div>
-        {% endif %}
-        
-        <h3>Key Findings</h3>
-        {% for finding in key_findings %}
-        <div class="finding">
-            <strong>{{ finding.title }}</strong><br>
-            {{ finding.description }}
-        </div>
-        {% endfor %}
-        
-        <h3>Priority Recommendations</h3>
-        {% for recommendation in recommendations %}
-        <div class="recommendation">
-            {{ recommendation }}
-        </div>
-        {% endfor %}
-    </div>
-</body>
-</html>
-        """
-
-        with open(os.path.join(templates_dir, "executive_summary.html"), "w") as f:
-            f.write(executive_template)
 
     def generate_executive_report(
         self, sessions: List[Dict[str, Any]], timeframe: str = "monthly"
@@ -642,6 +556,8 @@ class DynamicReportGenerator:
                 insights, trends
             ),
             "annexes": self._build_annexes(sessions),
+            "phase_detail": self._build_phase_detail(sessions),
+            "findings_by_phase": self._group_findings_by_phase(all_vulnerabilities),
             "attack_chain_narrative": next(
                 (s["attack_chain_narrative"] for s in sessions if s.get("attack_chain_narrative")),
                 None,
@@ -650,18 +566,51 @@ class DynamicReportGenerator:
 
         return executive_report
 
-    def _build_annexes(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Annex A/B/C data for the report template.
+    def _build_phase_detail(self, sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Per-phase breakdown for the report: tools used, the exact commands
+        run (from PhaseResult.commands_used, populated by
+        EnterpriseToolManager.command_log), the engine's own analysis of the
+        phase outcome, and timing - everything the HTML download ("same info
+        as the artifact") needs to show per phase, not just an aggregate
+        tool list."""
+        detail = []
+        for session in sessions:
+            for phase in session.get("phase_results", []):
+                detail.append({
+                    "phase_number": phase.get("phase_number"),
+                    "phase_name": phase.get("phase_name", "Unknown phase"),
+                    "status": phase.get("status", "unknown"),
+                    "tools_used": phase.get("tools_used") or [],
+                    "commands_used": phase.get("commands_used") or [],
+                    "ai_analysis": phase.get("ai_analysis") or "",
+                    "execution_time": phase.get("execution_time"),
+                })
+        detail.sort(key=lambda p: (p["phase_number"] is None, p["phase_number"]))
+        return detail
 
-        Annex A lists tools used per phase (from PhaseResult.tools_used,
-        correctly scoped per session) rather than literal command-line
-        invocations - this engine doesn't keep a separate, per-session
-        argv log, and threading one through accurately would be a bigger
-        change than this annex warrants.
-        """
+    def _group_findings_by_phase(
+        self, vulnerabilities: List[Dict[str, Any]]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Every vulnerability row, grouped by phase - the PDF needs the same
+        full findings (every subdomain, every open port, every tech
+        detection) the HTML report shows, not just the top few 'key
+        findings' used for the executive summary metrics."""
+        by_phase: Dict[str, List[Dict[str, Any]]] = {}
+        severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        for vuln in vulnerabilities:
+            phase = vuln.get("phase") or "unknown"
+            by_phase.setdefault(phase, []).append(vuln)
+        for findings in by_phase.values():
+            findings.sort(key=lambda v: severity_rank.get(str(v.get("severity", "info")).lower(), 5))
+        return by_phase
+
+    def _build_annexes(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Annex data for the report template: discovered subdomains and raw
+        tool-evidence excerpts. Per-phase tools/commands live in
+        `_build_phase_detail` instead - that one has the exact argv (from
+        PhaseResult.commands_used), not just the tool name list."""
         subdomains = set()
         raw_excerpts = []
-        phase_tools = []
 
         for session in sessions:
             for vuln in session.get("vulnerabilities", []):
@@ -680,14 +629,7 @@ class DynamicReportGenerator:
                             "excerpt": str(excerpt)[:1500],
                         })
 
-            for phase in session.get("phase_results", []):
-                phase_tools.append({
-                    "phase_name": phase.get("phase_name", "Unknown phase"),
-                    "tools_used": phase.get("tools_used") or [],
-                })
-
         return {
-            "phase_tools": phase_tools,
             "subdomains": sorted(subdomains),
             "raw_excerpts": raw_excerpts[:10],
         }
@@ -927,6 +869,8 @@ class DynamicReportGenerator:
                 key_findings=report_data.get("key_findings", []),
                 recommendations=report_data.get("recommendations", []),
                 annexes=report_data.get("annexes", {}),
+                phase_detail=report_data.get("phase_detail", []),
+                findings_by_phase=report_data.get("findings_by_phase", {}),
                 attack_chain_narrative=report_data.get("attack_chain_narrative"),
             )
         except Exception as e:

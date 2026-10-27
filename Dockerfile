@@ -19,6 +19,8 @@ RUN printf 'Types: deb\nURIs: http://kali.mirror.rafal.ca/kali/\nSuites: kali-ro
 RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=15 update && \
     apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=15 install -y \
     python3 \
+    python3-dev \
+    build-essential \
     libldap2-dev \
     libsasl2-dev \
     libssl-dev \

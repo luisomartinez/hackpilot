@@ -20,6 +20,7 @@ Features:
 
 import os
 import sys
+import signal
 import json
 import re
 import time
@@ -673,25 +674,36 @@ class EnterpriseHackPilot:
                     ("Phase 6: Verification & Retesting", phases.phase6_retesting)
                 ]
                 
+                was_cancelled = False
                 for phase_name, phase_method in phase_tasks:
+                    if cancellation_registry.is_requested(session_id):
+                        self.console.print(f"[yellow]Pentest cancelled before {phase_name}[/yellow]")
+                        was_cancelled = True
+                        break
+
                     task = progress.add_task(phase_name, total=100)
                     progress.update(task, advance=10)
-                    
+
                     result = phase_method()
                     progress.update(task, completed=100)
-                    
+
                     if not result.get("success", True):
                         self.console.print(f"[red]Phase failed: {phase_name}[/red]")
                         break
-            
-            self.console.print("[bold green]Enterprise Pentest Completed Successfully![/bold green]")
-            
-            if self.db:
-                self.db.update_session_status(session_id, "completed", "system")
-            
-            # Show summary
-            self.show_pentest_summary(session_id, phases.results)
-            
+
+            if was_cancelled:
+                self.console.print("[yellow]Enterprise Pentest Cancelled[/yellow]")
+                if self.db:
+                    self.db.update_session_status(session_id, "cancelled", "system")
+            else:
+                self.console.print("[bold green]Enterprise Pentest Completed Successfully![/bold green]")
+
+                if self.db:
+                    self.db.update_session_status(session_id, "completed", "system")
+
+                # Show summary
+                self.show_pentest_summary(session_id, phases.results)
+
         except KeyboardInterrupt:
             self.console.print("[yellow]Pentest interrupted by user[/yellow]")
             if self.db:
@@ -701,6 +713,8 @@ class EnterpriseHackPilot:
             self.console.print(f"[red]Error during pentest: {e}[/red]")
             if self.db:
                 self.db.update_session_status(session_id, "failed", "system")
+        finally:
+            cancellation_registry.clear(session_id)
     
     def show_pentest_summary(self, session_id: str, results: Dict):
         """Show pentest summary"""
@@ -2461,6 +2475,34 @@ class EnterpriseHackPilot:
         except Exception as e:
             self.logger.error(f"Error during shutdown: {e}")
 
+class CancellationRegistry:
+    """Session-scoped cancel flags so /api/session/<id>/cancel actually
+    stops a running background pentest instead of only flipping its DB
+    status. Confirmed live: without this, cancelling a session left amass
+    and then whatweb running against the target for minutes afterward,
+    and the phase loop kept advancing (nmap for Phase 2 started next)
+    regardless of the 'cancelled' DB row."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._cancelled = set()
+
+    def request(self, session_id: str) -> None:
+        with self._lock:
+            self._cancelled.add(session_id)
+
+    def is_requested(self, session_id: str) -> bool:
+        with self._lock:
+            return session_id in self._cancelled
+
+    def clear(self, session_id: str) -> None:
+        with self._lock:
+            self._cancelled.discard(session_id)
+
+
+cancellation_registry = CancellationRegistry()
+
+
 # Placeholder classes for missing components
 # Placeholder classes for missing components
 class EnterpriseToolManager:
@@ -2503,7 +2545,45 @@ class EnterpriseToolManager:
         self.console = Console()
         self.installed_tools = set()
         self.tool_versions = {}
-        
+        # Every run_command() call appends here - phases snapshot slices of
+        # this log to know exactly which commands they ran, for reporting.
+        self.command_log: List[Dict[str, Any]] = []
+        # The currently in-flight external tool process (if any), so a
+        # session cancellation can kill it immediately instead of waiting
+        # out its own timeout (amass alone defaults to 900s).
+        self._active_popen = None
+        self._popen_lock = threading.Lock()
+
+    def terminate_active_process(self):
+        """Kill whatever external tool is currently running, if any."""
+        with self._popen_lock:
+            proc = self._active_popen
+        if proc is None or proc.poll() is not None:
+            return
+        self._kill_tree(proc)
+
+    @staticmethod
+    def _kill_tree(proc):
+        """Kill a process and everything it forked.
+
+        Killing just the tracked PID is not enough: amass (and other
+        tools) fork their own child processes (confirmed live: amass's
+        '/usr/bin/amass' shell wrapper forks the real binary, which forks
+        an 'amass engine' worker) that outlive the one PID a plain
+        proc.kill() reaches, reparent to PID 1, and keep scanning the
+        target after 'cancel' returns (or after a timeout). _run_tracked()
+        starts each process in its own session (POSIX) so killpg() here
+        takes out the whole tree instead of just the top of it."""
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            logger.warning("Failed to kill process tree for pid %s: %s", proc.pid, e)
+
     def ensure_tools(self, tools):
         """Ensure all required tools are installed"""
         missing_tools = []
@@ -2558,12 +2638,28 @@ class EnterpriseToolManager:
 
     def run_command(self, command, timeout=300):
         """Execute a system command safely (never uses shell=True)."""
+        outcome = self._run_command_uncounted(command, timeout)
+        cmd_str = command if isinstance(command, str) else shlex.join(str(c) for c in command)
+        self.command_log.append({
+            'command': cmd_str,
+            'success': outcome.get('success', False),
+            'timestamp': datetime.utcnow().isoformat(),
+        })
+        return outcome
+
+    def _run_command_uncounted(self, command, timeout=300):
         try:
             self.console.print(f"[cyan]Executing: {command}[/cyan]")
             if isinstance(command, list):
-                result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+                return self._run_tracked(command, timeout, command)
             elif '|' in command:
                 result = self._run_pipeline(command, timeout=timeout)
+                return {
+                    'success': result.returncode == 0,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr,
+                    'command': command
+                }
             elif any(c in command for c in ';>&<`$'):
                 return {
                     'success': False,
@@ -2572,13 +2668,7 @@ class EnterpriseToolManager:
                     'command': command
                 }
             else:
-                result = subprocess.run(shlex.split(command), capture_output=True, text=True, timeout=timeout)
-            return {
-                'success': result.returncode == 0,
-                'stdout': result.stdout,
-                'stderr': result.stderr,
-                'command': command
-            }
+                return self._run_tracked(shlex.split(command), timeout, command)
         except subprocess.TimeoutExpired:
             return {
                 'success': False,
@@ -2600,6 +2690,49 @@ class EnterpriseToolManager:
                 'stderr': str(e),
                 'command': command
             }
+
+    def _run_tracked(self, argv, timeout, command_repr):
+        """Run argv via Popen, registering it as the active process for the
+        duration so terminate_active_process() (called on session
+        cancellation) can kill it immediately instead of waiting out its
+        own timeout. start_new_session=True gives the process its own
+        session/process-group (POSIX) so killing the whole tree - not
+        just this one PID - is possible: amass alone forks a shell
+        wrapper -> the real binary -> an 'amass engine' worker, and a
+        plain proc.kill() only ever reached the first of those."""
+        start_new_session = hasattr(os, "killpg")
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=start_new_session,
+        )
+        with self._popen_lock:
+            self._active_popen = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._kill_tree(proc)
+            proc.communicate()
+            raise
+        finally:
+            with self._popen_lock:
+                if self._active_popen is proc:
+                    self._active_popen = None
+        if proc.returncode == -9 or proc.returncode == -15:
+            # Killed by terminate_active_process() (SIGKILL) rather than
+            # finishing or timing out on its own - report it as such so the
+            # caller doesn't mistake a cancellation for a normal tool failure.
+            return {
+                'success': False,
+                'stdout': stdout,
+                'stderr': stderr or 'Process terminated (session cancelled)',
+                'command': command_repr
+            }
+        return {
+            'success': proc.returncode == 0,
+            'stdout': stdout,
+            'stderr': stderr,
+            'command': command_repr
+        }
 
     def _run_pipeline(self, command, timeout=300):
         """Run cmd1 | cmd2 | ... without shell=True."""
@@ -2709,7 +2842,15 @@ class EnterprisePentestingPhases:
         self.compliance = compliance
         self.report_generator = report_generator
         self.results = {}
-        
+
+    def _cancelled(self) -> bool:
+        """True once /api/session/<id>/cancel has been called for this
+        session. Checked between individual tool invocations (not just
+        between phases) so a cancelled session stops launching new tools
+        right away instead of finishing out the rest of the current
+        phase's tool list."""
+        return cancellation_registry.is_requested(self.session_id)
+
     def phase1_reconnaissance(self):
         """Phase 1: Intelligence Gathering & Reconnaissance (live nmap scan)"""
         console.print(Panel("[bold blue]Phase 1: Intelligence Gathering & Reconnaissance[/bold blue]"))
@@ -2728,6 +2869,7 @@ class EnterprisePentestingPhases:
         start_time = time.time()
         open_ports = []
         scan_error = None
+        cmd_log_start = len(self.tool_manager.command_log) if self.tool_manager else 0
 
         if self.tool_manager and target:
             scan_host = _extract_scan_host(target)
@@ -2756,6 +2898,8 @@ class EnterprisePentestingPhases:
 
             raw_recon_findings = []
             for runner in (run_subfinder, run_amass):
+                if self._cancelled():
+                    break
                 try:
                     raw_recon_findings.extend(runner(self.tool_manager, scan_host))
                 except Exception as e:
@@ -2765,11 +2909,12 @@ class EnterprisePentestingPhases:
             subdomains = [f["target"] for f in subdomain_findings]
 
             whatweb_targets = list({scan_host, *subdomains}) if subdomains else [scan_host]
-            try:
-                tech_findings = consolidate(run_whatweb(self.tool_manager, whatweb_targets))
-            except Exception as e:
-                logger.warning("whatweb failed for %s: %s", scan_host, e)
-                tech_findings = []
+            tech_findings = []
+            if not self._cancelled():
+                try:
+                    tech_findings = consolidate(run_whatweb(self.tool_manager, whatweb_targets))
+                except Exception as e:
+                    logger.warning("whatweb failed for %s: %s", scan_host, e)
 
             if self.db:
                 from reporting.cvss_heuristics import estimate_cvss
@@ -2820,6 +2965,10 @@ class EnterprisePentestingPhases:
                 )
 
             if res_id:
+                commands_used = (
+                    [c["command"] for c in self.tool_manager.command_log[cmd_log_start:]]
+                    if self.tool_manager else []
+                )
                 self.db.update_phase_result(
                     result_id=res_id,
                     status="completed",
@@ -2830,7 +2979,8 @@ class EnterprisePentestingPhases:
                         if open_ports else
                         f"Live nmap reconnaissance against '{target}' returned no results: {scan_error}"
                     ),
-                    execution_time=execution_time
+                    execution_time=execution_time,
+                    commands_used=commands_used
                 )
 
         # "success" means the phase completed (it ran nmap without crashing), not that
@@ -2864,6 +3014,7 @@ class EnterprisePentestingPhases:
         start_time = time.time()
         services = []
         scan_error = None
+        cmd_log_start = len(self.tool_manager.command_log) if self.tool_manager else 0
 
         if self.tool_manager and target:
             scan_host = _extract_scan_host(target)
@@ -2913,6 +3064,10 @@ class EnterprisePentestingPhases:
                 )
 
             if res_id:
+                commands_used = (
+                    [c["command"] for c in self.tool_manager.command_log[cmd_log_start:]]
+                    if self.tool_manager else []
+                )
                 self.db.update_phase_result(
                     result_id=res_id,
                     status="completed",
@@ -2923,7 +3078,8 @@ class EnterprisePentestingPhases:
                         if services else
                         f"Live nmap enumeration against '{target}' returned no results: {scan_error}"
                     ),
-                    execution_time=execution_time
+                    execution_time=execution_time,
+                    commands_used=commands_used
                 )
 
         # Same reasoning as phase1: "success" = phase completed, not "found something".
@@ -2954,6 +3110,7 @@ class EnterprisePentestingPhases:
         start_time = time.time()
         findings = []
         scan_error = None
+        cmd_log_start = len(self.tool_manager.command_log) if self.tool_manager else 0
 
         prior_ports = list(self.results.get("phase1_reconnaissance", {}).get("open_ports", []))
         prior_ports += list(self.results.get("phase2_scanning_enumeration", {}).get("services", []))
@@ -2967,15 +3124,26 @@ class EnterprisePentestingPhases:
             scan_error = "No HTTP/HTTPS service identified in Phase 1/2 to assess"
         elif not self.tool_manager:
             scan_error = "Tool manager unavailable"
+        elif self._cancelled():
+            scan_error = "Session cancelled"
         else:
             scan = self.tool_manager.run_command(
                 ["nikto", "-h", target, "-maxtime", "30s", "-Tuning", "1,2,3"], timeout=60
             )
             for line in scan.get("stdout", "").splitlines():
                 line = line.strip()
-                if line.startswith("+") and "0 host(s) tested" not in line:
+                # nikto prefixes both real findings AND its own connectivity
+                # failure notice ("+ [FAIL] Unable to connect...") with "+ ",
+                # so that notice must be excluded explicitly or it gets
+                # persisted as a fabricated "web server finding".
+                if line.startswith("+") and "0 host(s) tested" not in line and "[FAIL]" not in line:
                     findings.append(line.lstrip("+ ").strip())
-            if not findings:
+            if "[FAIL]" in scan.get("stdout", ""):
+                scan_error = next(
+                    (l.strip().lstrip("+ ").strip() for l in scan.get("stdout", "").splitlines() if "[FAIL]" in l),
+                    "nikto could not connect to the target"
+                )
+            elif not findings:
                 scan_error = (scan.get("stderr") or "").strip() or "nikto completed with no flagged items"
 
         # Sprint 1: template-based (nuclei), TLS (testssl.sh), and web app
@@ -2993,21 +3161,24 @@ class EnterprisePentestingPhases:
             wapiti_target = target if "://" in target else f"http://{target}"
             raw_vuln_findings = []
 
-            try:
-                update_nuclei_templates(self.tool_manager)
-                raw_vuln_findings.extend(run_nuclei(self.tool_manager, list({target, *subdomains})))
-            except Exception as e:
-                logger.warning("nuclei failed for %s: %s", target, e)
+            if not self._cancelled():
+                try:
+                    update_nuclei_templates(self.tool_manager)
+                    raw_vuln_findings.extend(run_nuclei(self.tool_manager, list({target, *subdomains})))
+                except Exception as e:
+                    logger.warning("nuclei failed for %s: %s", target, e)
 
-            try:
-                raw_vuln_findings.extend(run_testssl(self.tool_manager, scan_host))
-            except Exception as e:
-                logger.warning("testssl.sh failed for %s: %s", scan_host, e)
+            if not self._cancelled():
+                try:
+                    raw_vuln_findings.extend(run_testssl(self.tool_manager, scan_host))
+                except Exception as e:
+                    logger.warning("testssl.sh failed for %s: %s", scan_host, e)
 
-            try:
-                raw_vuln_findings.extend(run_wapiti(self.tool_manager, wapiti_target))
-            except Exception as e:
-                logger.warning("wapiti failed for %s: %s", wapiti_target, e)
+            if not self._cancelled():
+                try:
+                    raw_vuln_findings.extend(run_wapiti(self.tool_manager, wapiti_target))
+                except Exception as e:
+                    logger.warning("wapiti failed for %s: %s", wapiti_target, e)
 
             consolidated_vuln_findings = consolidate(raw_vuln_findings)
             if self.db:
@@ -3072,7 +3243,11 @@ class EnterprisePentestingPhases:
                         if findings else
                         f"Live nikto scan against '{target}' returned no results: {scan_error}"
                     ),
-                    execution_time=execution_time
+                    execution_time=execution_time,
+                    commands_used=(
+                        [c["command"] for c in self.tool_manager.command_log[cmd_log_start:]]
+                        if self.tool_manager else []
+                    )
                 )
 
         result = {
@@ -3177,6 +3352,7 @@ class EnterprisePentestingPhases:
             self.results["phase4_exploitation"] = result
             return result
 
+        cmd_log_start = len(self.tool_manager.command_log) if self.tool_manager else 0
         scan_host = _extract_scan_host(target)
         base_url = target if "://" in target else f"http://{target}"
         port = "443" if base_url.startswith("https://") else "80"
@@ -3200,27 +3376,33 @@ class EnterprisePentestingPhases:
         # the rest or the phase.
         raw_exploit_findings = []
 
-        try:
-            raw_exploit_findings.extend(run_ffuf_dirs(self.tool_manager, base_url))
-        except Exception as e:
-            logger.warning("ffuf (dirs) failed for %s: %s", base_url, e)
+        if not self._cancelled():
+            try:
+                raw_exploit_findings.extend(run_ffuf_dirs(self.tool_manager, base_url))
+            except Exception as e:
+                logger.warning("ffuf (dirs) failed for %s: %s", base_url, e)
 
         for url in param_urls:
+            if self._cancelled():
+                break
             try:
                 raw_exploit_findings.extend(run_sqlmap(self.tool_manager, url))
             except Exception as e:
                 logger.warning("sqlmap failed for %s: %s", url, e)
 
         for cve_id in cve_ids:
+            if self._cancelled():
+                break
             try:
                 raw_exploit_findings.extend(run_msf_check(self.tool_manager, cve_id, scan_host, port))
             except Exception as e:
                 logger.warning("msf_check failed for %s against %s: %s", cve_id, scan_host, e)
 
-        try:
-            raw_exploit_findings.extend(run_ffuf_vhosts(self.tool_manager, scan_host))
-        except Exception as e:
-            logger.warning("ffuf (vhosts) failed for %s: %s", scan_host, e)
+        if not self._cancelled():
+            try:
+                raw_exploit_findings.extend(run_ffuf_vhosts(self.tool_manager, scan_host))
+            except Exception as e:
+                logger.warning("ffuf (vhosts) failed for %s: %s", scan_host, e)
 
         consolidated_exploit_findings = consolidate(raw_exploit_findings)
         if self.db:
@@ -3260,6 +3442,10 @@ class EnterprisePentestingPhases:
                     "vulnerabilities_found": len(consolidated_exploit_findings),
                     "mode": "active",
                 },
+                commands_used=(
+                    [c["command"] for c in self.tool_manager.command_log[cmd_log_start:]]
+                    if self.tool_manager else []
+                ),
                 ai_analysis=active_summary,
                 execution_time=time.time() - start_time
             )
@@ -3618,6 +3804,7 @@ class EnterpriseWebDashboard:
                         "completed_at": p.completed_at.isoformat() if p.completed_at else None,
                         "execution_time": p.execution_time,
                         "tools_used": p.tools_used,
+                        "commands_used": p.commands_used,
                         "ai_analysis": p.ai_analysis
                     } for p in phases]
                 })
@@ -3660,10 +3847,18 @@ class EnterpriseWebDashboard:
 
         @app.route('/api/session/<session_id>/cancel', methods=['POST'])
         def cancel_pentest(session_id):
+            """Stop a running background pentest, not just flip its DB
+            status. Previously this only updated the session row - the
+            background thread (and whatever tool it was mid-run on, e.g.
+            amass/whatweb) kept running against the target for as long as
+            the phase loop took to get there on its own."""
             if not self.hackpilot.db:
                 return jsonify({"error": "Database not initialized"}), 500
 
             try:
+                cancellation_registry.request(session_id)
+                if self.hackpilot.tool_manager:
+                    self.hackpilot.tool_manager.terminate_active_process()
                 self.hackpilot.db.update_session_status(session_id, 'cancelled', 'system')
                 return jsonify({"status": "cancelled", "session_id": session_id})
             except Exception as e:
@@ -3715,6 +3910,7 @@ class EnterpriseWebDashboard:
                     "vulnerabilities": [{
                         "id": v.id,
                         "title": v.title,
+                        "phase": v.phase,
                         "severity": v.severity,
                         "target": v.proof_of_concept,
                         "description": v.description,
@@ -3727,8 +3923,13 @@ class EnterpriseWebDashboard:
                         "evidence": v.evidence,
                     } for v in vulns],
                     "phase_results": [{
+                        "phase_number": p.phase_number,
                         "phase_name": p.phase_name,
+                        "status": p.status,
                         "tools_used": p.tools_used,
+                        "commands_used": p.commands_used,
+                        "ai_analysis": p.ai_analysis,
+                        "execution_time": p.execution_time,
                     } for p in phase_results],
                 }
 

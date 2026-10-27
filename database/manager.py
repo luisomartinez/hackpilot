@@ -224,7 +224,7 @@ class DatabaseManager:
     # Phase result management
     def create_phase_result(self, session_id: str, phase_name: str, phase_number: int,
                           results: Dict[str, Any], ai_analysis: str = None,
-                          tools_used: List[str] = None) -> str:
+                          tools_used: List[str] = None, commands_used: List[str] = None) -> str:
         """Create a new phase result"""
         with self.get_session() as session:
             phase_result = PhaseResult(
@@ -233,16 +233,18 @@ class DatabaseManager:
                 phase_number=phase_number,
                 results=results,
                 ai_analysis=ai_analysis,
-                tools_used=tools_used or []
+                tools_used=tools_used or [],
+                commands_used=commands_used or []
             )
-            
+
             session.add(phase_result)
             session.flush()
-            
+
             return phase_result.id
-    
+
     def update_phase_result(self, result_id: str, status: str, completed_at: datetime = None,
-                          results: Dict[str, Any] = None, ai_analysis: str = None, execution_time: float = None):
+                          results: Dict[str, Any] = None, ai_analysis: str = None, execution_time: float = None,
+                          commands_used: List[str] = None):
         """Update phase result"""
         with self.get_session() as session:
             phase_result = session.query(PhaseResult).filter(PhaseResult.id == result_id).first()
@@ -255,6 +257,8 @@ class DatabaseManager:
                     phase_result.ai_analysis = ai_analysis
                 if execution_time is not None:
                     phase_result.execution_time = execution_time
+                if commands_used is not None:
+                    phase_result.commands_used = commands_used
 
     def get_phase_results(self, session_id: str) -> List[PhaseResult]:
         """Get all phase results for a session"""
