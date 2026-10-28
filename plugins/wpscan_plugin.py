@@ -3,7 +3,15 @@
 """WPScan - only runs when WordPress is actually detected (via whatweb's
 tech fingerprint or a live /wp-json/ check), never unconditionally.
 Enumeration only (vulnerable plugins + users) - no password brute-force,
-no exploitation."""
+no exploitation.
+
+CLI flags (--url/--enumerate/--format/--output/--no-banner) confirmed
+present via `wpscan --help` against the real Kali package this session,
+but NOT run against an actual WordPress site - none of this session's
+authorized targets run WordPress. The JSON schema _vulns_from() expects
+(version/main_theme/plugins.<slug>, each with a "vulnerabilities" list)
+is wpscan's documented output shape, not something exercised against
+real positive data."""
 
 import logging
 import os

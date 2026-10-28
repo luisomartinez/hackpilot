@@ -2,7 +2,19 @@
 # HackPilot core module
 """nmap --script vulners - maps detected service versions to known CVEs
 via vulners.com's NSE database. Complements the existing phase2 nmap -sV
-call (which only gets banners) with an actual CVE list, still read-only."""
+call (which only gets banners) with an actual CVE list, still read-only.
+
+Confirmed live (same authorized target) that without an API key the
+script only emits an informational "Ran without an API key" notice - no
+<table> of CVEs at all, so there's nothing for _parse() to find and the
+scan time is wasted. VULNERS_API_KEY (free signup at vulners.com) is
+required for this plugin to ever find anything; is_applicable() refuses
+to run without it rather than silently producing empty results.
+
+NOT verified against real positive data: without an API key available
+this session, the <table> XML shape _parse() looks for (nested under
+<host><ports><port><script id="vulners">) is nmap's documented per-port
+script placement, not something exercised against an actual CVE match."""
 
 import logging
 import os
@@ -21,8 +33,12 @@ class NmapVulnersPlugin(Plugin):
     name = "nmap_vulners"
     phase = "scanning"
 
+    def is_applicable(self, ctx: PluginContext) -> bool:
+        return bool(os.getenv("VULNERS_API_KEY"))
+
     def run(self, ctx: PluginContext) -> PluginResult:
         started = datetime.utcnow()
+        self._ensure_api_key_file()
         fd, out_path = tempfile.mkstemp(suffix=".vulners.xml")
         os.close(fd)
 
@@ -49,6 +65,22 @@ class NmapVulnersPlugin(Plugin):
             started_at=started, finished_at=datetime.utcnow(),
             findings=findings, errors=errors,
         )
+
+    @staticmethod
+    def _ensure_api_key_file() -> None:
+        """vulners.nse reads ~/.nmap/vulners.key automatically (confirmed
+        live) - there's no --script-args way to pass it, so write it there
+        once rather than on every run."""
+        key = os.getenv("VULNERS_API_KEY")
+        if not key:
+            return
+        key_dir = os.path.expanduser("~/.nmap")
+        key_path = os.path.join(key_dir, "vulners.key")
+        if os.path.exists(key_path):
+            return
+        os.makedirs(key_dir, exist_ok=True)
+        with open(key_path, "w", encoding="utf-8") as f:
+            f.write(key)
 
     @staticmethod
     def _parse(tree: ET.ElementTree, host: str, command: str) -> List[Dict[str, Any]]:

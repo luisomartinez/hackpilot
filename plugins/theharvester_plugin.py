@@ -2,7 +2,15 @@
 # HackPilot core module
 """theHarvester (https://github.com/laramies/theHarvester) - passive OSINT
 recon across public sources. Complements subfinder/amass (DNS-only) with
-emails, hosts and IPs theHarvester's own source set surfaces."""
+emails, hosts and IPs theHarvester's own source set surfaces.
+
+Source list confirmed live (theHarvester 4.11.1, run against an
+authorized real target): "bing" and "dnsdumpster" from the original task
+spec don't exist in this version - theHarvester refuses the *entire* run
+if even one requested source is invalid ("[!] Invalid source."), so the
+whole plugin silently produced nothing until this was fixed. The four
+below are free (no API key) and confirmed present in
+theHarvester/discovery/*.py."""
 
 import logging
 import os
@@ -32,14 +40,18 @@ class TheHarvesterPlugin(Plugin):
 
     def run(self, ctx: PluginContext) -> PluginResult:
         started = datetime.utcnow()
-        fd, out_base = tempfile.mkstemp(suffix=".theharvester")
+        # No suffix: confirmed live that theHarvester strips whatever comes
+        # after the first "." in -f's value and writes "<that>.json"/".xml"
+        # itself - passing a dotted basename like "tmpXXXX.theharvester"
+        # made it write "tmpXXXX.json", not "tmpXXXX.theharvester.json".
+        fd, out_base = tempfile.mkstemp()
         os.close(fd)
         os.remove(out_base)  # theHarvester writes <out_base>.json itself
         json_path = f"{out_base}.json"
 
         args = [
             "theHarvester", "-d", ctx.scan_host,
-            "-b", "bing,crtsh,dnsdumpster", "-l", "500", "-f", out_base,
+            "-b", "crtsh,hackertarget,rapiddns,urlscan", "-l", "500", "-f", out_base,
         ]
         result = ctx.tool_manager.run_command(args, timeout=300)
         data = read_json_file(json_path)

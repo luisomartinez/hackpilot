@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # HackPilot core module
-"""sqlmap's REST-JSON API (sqlmapapi.py), as an alternative to the
-existing CLI-based exploitation.tools.sqlmap_runner: structured JSON
-status/data instead of regexing CLI stdout, for the same confirm-and-stop
-policy already enforced there.
+"""sqlmap's REST-JSON API (sqlmapapi), as an alternative to the existing
+CLI-based exploitation.tools.sqlmap_runner: structured JSON status/data
+instead of regexing CLI stdout, for the same confirm-and-stop policy
+already enforced there.
 
 Hard restriction (same RoE as sqlmap_runner.py): the scan options sent to
 the API must never include an option that extracts data or spawns a
@@ -11,15 +11,30 @@ shell/OS command. _assert_safe_options() enforces this independent of
 whatever this file's OPTIONS dict says, same defense-in-depth pattern as
 sqlmap_runner.py's _assert_safe_args().
 
-NOTE: not yet exercised against a live target in this environment - the
-exact binary name (sqlmapapi.py vs sqlmapapi vs sqlmap --api, depending
-on packaging) needs confirming against the real Kali sqlmap package
-before this plugin is enabled by default. Ship disabled
-(ENABLE_SQLMAP_API_PLUGIN unset) until that's verified live, the same way
-testssl's binary name turned out to differ from its apt package name.
+Confirmed live against the real Kali sqlmap package (ad-hoc, against
+Acunetix's public testphp.vulnweb.com test target - not a hypothetical):
+- The apt package's own script is /usr/share/sqlmap/sqlmapapi.py, but the
+  PATH symlink it installs is "sqlmapapi" (no ".py") - same kind of
+  apt-package-name-vs-binary-name mismatch as testssl.sh/testssl.
+- The server refuses to start without --username/--password (HTTP Basic
+  Auth is mandatory, not optional, in this version) - a fresh random
+  password is generated per run here, scoped to one ephemeral local
+  server process, never reused or exposed.
+- /task/new and /scan/<id>/{status,data}/task/<id>/delete are GET;
+  /option/<id>/set and /scan/<id>/start are POST. (The task prompt that
+  asked for this plugin got this wrong - it described /task/new as POST.)
+
+NOT verified live: the exact /scan/<id>/data entry shape for a genuinely
+confirmed-vulnerable target (the test run above completed cleanly but
+found nothing, same honest result the CLI runner would have gotten
+against a no-longer-vulnerable public test parameter) - _parse_data()'s
+field mapping is sqlmap's documented schema, not something exercised
+against positive data this session. Leave disabled until that's confirmed
+too.
 """
 
 import logging
+import secrets
 import subprocess
 import time
 from datetime import datetime
@@ -62,42 +77,45 @@ class SqlmapApiPlugin(Plugin):
 
         started = datetime.utcnow()
         base = f"http://127.0.0.1:{self.PORT}"
+        username = "hackpilot"
+        password = secrets.token_hex(16)
+        auth = (username, password)
         server_proc: Optional[subprocess.Popen] = None
         findings: List[Dict[str, Any]] = []
         errors: List[str] = []
-        command_repr = f"sqlmapapi.py -s -p {self.PORT}"
+        command_repr = f"sqlmapapi -s -p {self.PORT} --username {username} --password ***"
 
         try:
             server_proc = subprocess.Popen(
-                ["sqlmapapi.py", "-s", "-p", str(self.PORT)],
+                ["sqlmapapi", "-s", "-p", str(self.PORT), "--username", username, "--password", password],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            if not self._wait_for_server(base, requests):
+            if not self._wait_for_server(base, requests, auth):
                 errors.append("sqlmap API server did not come up in time")
                 return PluginResult(tool=self.name, phase=self.phase, command=command_repr,
                                      started_at=started, finished_at=datetime.utcnow(), errors=errors)
 
-            task_id = requests.post(f"{base}/task/new", timeout=10).json().get("taskid")
+            task_id = requests.get(f"{base}/task/new", auth=auth, timeout=10).json().get("taskid")
             if not task_id:
                 errors.append("sqlmap API did not return a task id")
                 return PluginResult(tool=self.name, phase=self.phase, command=command_repr,
                                      started_at=started, finished_at=datetime.utcnow(), errors=errors)
 
-            options = {**_SAFE_OPTIONS, "url": ctx.target}
+            options = {**_SAFE_OPTIONS}
             _assert_safe_options(options)
-            requests.post(f"{base}/option/{task_id}/set", json=options, timeout=10)
-            requests.post(f"{base}/scan/{task_id}/start", json={"url": ctx.target}, timeout=10)
+            requests.post(f"{base}/option/{task_id}/set", auth=auth, json=options, timeout=10)
+            requests.post(f"{base}/scan/{task_id}/start", auth=auth, json={"url": ctx.target}, timeout=10)
 
             deadline = time.time() + 900
             while time.time() < deadline:
-                status = requests.get(f"{base}/scan/{task_id}/status", timeout=10).json()
+                status = requests.get(f"{base}/scan/{task_id}/status", auth=auth, timeout=10).json()
                 if status.get("status") == "terminated":
                     break
                 time.sleep(3)
 
-            data = requests.get(f"{base}/scan/{task_id}/data", timeout=10).json().get("data") or []
+            data = requests.get(f"{base}/scan/{task_id}/data", auth=auth, timeout=10).json().get("data") or []
             findings = self._parse_data(data, ctx.target, command_repr)
-            requests.get(f"{base}/task/{task_id}/delete", timeout=10)
+            requests.get(f"{base}/task/{task_id}/delete", auth=auth, timeout=10)
 
         except Exception as e:
             errors.append(str(e))
@@ -113,10 +131,10 @@ class SqlmapApiPlugin(Plugin):
         )
 
     @staticmethod
-    def _wait_for_server(base: str, requests_module, attempts: int = 10) -> bool:
+    def _wait_for_server(base: str, requests_module, auth, attempts: int = 10) -> bool:
         for _ in range(attempts):
             try:
-                if requests_module.get(base, timeout=2).status_code < 500:
+                if requests_module.get(base, auth=auth, timeout=2).status_code < 500:
                     return True
             except Exception:
                 time.sleep(1)

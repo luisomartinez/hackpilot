@@ -122,6 +122,17 @@ def test_nmap_vulners_plugin_parses_cve_table_from_xml():
     assert result.findings[0]["severity"] == "critical"
 
 
+def test_nmap_vulners_plugin_requires_an_api_key(monkeypatch):
+    """Confirmed live: without VULNERS_API_KEY, the script only emits an
+    informational "Ran without an API key" notice - no CVE table at all -
+    so running it is a guaranteed-empty waste of scan time."""
+    from plugins.nmap_vulners_plugin import NmapVulnersPlugin
+    monkeypatch.delenv("VULNERS_API_KEY", raising=False)
+    assert NmapVulnersPlugin().is_applicable(PluginContext(tool_manager=None, target="x", scan_host="x")) is False
+    monkeypatch.setenv("VULNERS_API_KEY", "fake-key")
+    assert NmapVulnersPlugin().is_applicable(PluginContext(tool_manager=None, target="x", scan_host="x")) is True
+
+
 def test_nikto_json_plugin_is_applicable_only_with_a_web_service():
     from plugins.nikto_json_plugin import NiktoJsonPlugin
     tm = FakeToolManager({})
@@ -132,11 +143,29 @@ def test_nikto_json_plugin_is_applicable_only_with_a_web_service():
 
 
 def test_nikto_json_plugin_parses_vulnerabilities():
+    """-Format json's real top-level shape (confirmed live) is a LIST of
+    per-host records, each with its own "vulnerabilities" list - not one
+    flat dict."""
     from plugins.nikto_json_plugin import NiktoJsonPlugin
-    tm = FakeToolManager({"nikto": {"json_file": {"vulnerabilities": [{"msg": "X-Frame-Options missing", "url": "/"}]}}})
+    tm = FakeToolManager({"nikto": {"json_file": [{"host": "x.com", "vulnerabilities": [
+        {"id": "999100", "msg": "X-Frame-Options missing", "url": "/"},
+    ]}]}})
     ctx = PluginContext(tool_manager=tm, target="https://x.com", scan_host="x.com", has_web_service=True)
     result = NiktoJsonPlugin().run(ctx)
     assert any("X-Frame-Options missing" in f["title"] for f in result.findings)
+
+
+def test_nikto_json_plugin_excludes_its_own_connection_failure_notice():
+    """Confirmed live: nikto's "[FAIL] Unable to connect" notice shows up
+    *inside* the vulnerabilities list with id "FAIL" - same failure mode
+    already fixed for the plain-text nikto parser this session."""
+    from plugins.nikto_json_plugin import NiktoJsonPlugin
+    tm = FakeToolManager({"nikto": {"json_file": [{"host": "x.com", "vulnerabilities": [
+        {"id": "FAIL", "msg": "Unable to connect to x.com:443.", "url": "/"},
+    ]}]}})
+    ctx = PluginContext(tool_manager=tm, target="https://x.com", scan_host="x.com", has_web_service=True)
+    result = NiktoJsonPlugin().run(ctx)
+    assert result.findings == []
 
 
 def test_wpscan_plugin_is_applicable_from_tech_fingerprint():

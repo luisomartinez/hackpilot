@@ -3,7 +3,12 @@
 """JoomScan - only runs when Joomla is detected. JoomScan has no JSON
 output mode, so this parses its stdout for CVE references and its own
 "[++] Vulnerability" markers - a small, tolerant text parser rather than
-a strict schema, since there isn't one."""
+a strict schema, since there isn't one.
+
+-u/--url confirmed present via `joomscan --help` against the real Kali
+package this session, but NOT run against an actual Joomla site - none
+of this session's authorized targets run Joomla, so the stdout markers
+this parses haven't been checked against real output."""
 
 import logging
 import re
