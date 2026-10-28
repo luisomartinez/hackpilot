@@ -131,6 +131,33 @@ def test_enabled_and_allowlisted_runs_full_active_orchestration(monkeypatch):
     assert any("backup.sql" in t for t in titles)
 
 
+def test_phase4_skips_vhost_fuzzing_but_still_runs_dirs_and_sqlmap_for_an_ip_target(monkeypatch):
+    """Host-header vhost fuzzing only means something for a domain - there
+    is no virtual-host namespace on a bare IP - so it must be skipped
+    there, while directory fuzzing and sqlmap (which don't depend on a
+    domain name) still run exactly as they would for a domain target."""
+    monkeypatch.setattr(config, "ENABLE_AUTO_EXPLOIT", True, raising=False)
+    monkeypatch.setattr(config, "ENABLE_ADVANCED_EXPLOITATION", True, raising=False)
+    monkeypatch.setenv("ALLOWED_TARGETS", "203.0.113.10")
+
+    tm = FakeToolManager({
+        "ffuf": {"json_file": {"results": [{"input": {"FUZZ": "backup.sql"}, "url": "http://203.0.113.10/backup.sql", "status": 200}]}},
+        "sqlmap": {"stdout": "Parameter: id (GET)\nis vulnerable\n[*] shopdb\n"},
+    })
+    db = FakeDB()
+    phases = _phases(tm, db, target="http://203.0.113.10/item?id=1")
+    phases.results["phase3_vulnerability_assessment"] = {"consolidated_findings": []}
+
+    result = phases.phase4_exploitation()
+
+    assert result["mode"] == "active"
+    ffuf_calls = [c for c in tm.calls if c[0] == "ffuf"]
+    assert len(ffuf_calls) == 1  # dirs only - vhosts would have been a second call
+    assert "-recursion" in ffuf_calls[0]  # still the intrusive dirs invocation
+    sqlmap_calls = [c for c in tm.calls if c[0] == "sqlmap"]
+    assert len(sqlmap_calls) == 1
+
+
 def test_phase4_stops_launching_new_active_tools_once_cancelled(monkeypatch):
     """Highest-blast-radius case for the /cancel fix: once a session is
     cancelled, no further sqlmap/msfconsole/ffuf invocation should start,

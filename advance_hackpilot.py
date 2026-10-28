@@ -21,6 +21,7 @@ Features:
 import os
 import sys
 import signal
+import ipaddress
 import json
 import re
 import time
@@ -2826,6 +2827,21 @@ def _extract_scan_host(target: str) -> str:
     return target.split("/", 1)[0].split(":", 1)[0]
 
 
+def _is_ip_address(host: str) -> bool:
+    """True for an IPv4/IPv6 literal. Used to skip DNS-only recon (subfinder,
+    amass enumerate *subdomains of a domain* - there is no such thing for a
+    bare IP target) so a direct-IP assessment doesn't burn their timeouts
+    (up to 900s for amass alone) on a lookup that can only ever come back
+    empty, and so the engine runs the same full 6-phase methodology against
+    either kind of target without the operator having to know which tools
+    apply to which."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 class EnterprisePentestingPhases:
     """Enterprise pentesting phases with advanced features"""
     
@@ -2855,6 +2871,15 @@ class EnterprisePentestingPhases:
         """Phase 1: Intelligence Gathering & Reconnaissance (live nmap scan)"""
         console.print(Panel("[bold blue]Phase 1: Intelligence Gathering & Reconnaissance[/bold blue]"))
 
+        target = (self.target_info or {}).get("target", "")
+        scan_host = _extract_scan_host(target)
+        target_is_ip = _is_ip_address(scan_host)
+        # subfinder/amass enumerate subdomains of a *domain* - there is none
+        # for a bare IP target, so the tool list this phase actually uses
+        # (and reports in the dashboard/PDF) reflects that instead of
+        # claiming two DNS tools ran when they were never applicable.
+        phase1_tools = ["nmap", "whatweb"] if target_is_ip else ["nmap", "subfinder", "amass", "whatweb"]
+
         res_id = None
         if self.db:
             res_id = self.db.create_phase_result(
@@ -2862,17 +2887,15 @@ class EnterprisePentestingPhases:
                 phase_name="Phase 1: Intelligence Gathering & Reconnaissance",
                 phase_number=1,
                 results={"status": "running"},
-                tools_used=["nmap", "subfinder", "amass", "whatweb"]
+                tools_used=phase1_tools
             )
 
-        target = (self.target_info or {}).get("target", "")
         start_time = time.time()
         open_ports = []
         scan_error = None
         cmd_log_start = len(self.tool_manager.command_log) if self.tool_manager else 0
 
         if self.tool_manager and target:
-            scan_host = _extract_scan_host(target)
             scan = self.tool_manager.run_command(
                 ["nmap", "-F", "-Pn", "--host-timeout", "30s", scan_host], timeout=60
             )
@@ -2892,18 +2915,20 @@ class EnterprisePentestingPhases:
         # take out the others or the phase.
         subdomains: List[str] = []
         if self.tool_manager and target:
-            scan_host = _extract_scan_host(target)
             from exploitation.tools import run_subfinder, run_amass, run_whatweb
             from exploitation.findings_consolidator import consolidate
 
             raw_recon_findings = []
-            for runner in (run_subfinder, run_amass):
-                if self._cancelled():
-                    break
-                try:
-                    raw_recon_findings.extend(runner(self.tool_manager, scan_host))
-                except Exception as e:
-                    logger.warning("%s failed for %s: %s", runner.__name__, scan_host, e)
+            if target_is_ip:
+                logger.info("%s is an IP address - skipping DNS subdomain enumeration (subfinder/amass)", scan_host)
+            else:
+                for runner in (run_subfinder, run_amass):
+                    if self._cancelled():
+                        break
+                    try:
+                        raw_recon_findings.extend(runner(self.tool_manager, scan_host))
+                    except Exception as e:
+                        logger.warning("%s failed for %s: %s", runner.__name__, scan_host, e)
 
             subdomain_findings = consolidate(raw_recon_findings)
             subdomains = [f["target"] for f in subdomain_findings]
@@ -3398,7 +3423,11 @@ class EnterprisePentestingPhases:
             except Exception as e:
                 logger.warning("msf_check failed for %s against %s: %s", cve_id, scan_host, e)
 
-        if not self._cancelled():
+        # Vhost fuzzing (Host-header brute-force) only means something for a
+        # domain - there is no virtual-host namespace to discover on a bare
+        # IP, so skip it there rather than burn its timeout (900s default)
+        # for a guaranteed-empty result.
+        if not self._cancelled() and not _is_ip_address(scan_host):
             try:
                 raw_exploit_findings.extend(run_ffuf_vhosts(self.tool_manager, scan_host))
             except Exception as e:
@@ -3890,7 +3919,7 @@ class EnterpriseWebDashboard:
 
         @app.route('/api/session/<session_id>/report', methods=['GET'])
         def download_report(session_id):
-            """Generate and download a report for this session. ?format=pdf|html|json (default pdf)."""
+            """Generate and download a report for this session. ?format=pdf|html|json|markdown (default pdf)."""
             if not self.hackpilot.db:
                 return jsonify({"error": "Database not initialized"}), 500
             if not self.hackpilot.report_generator:
@@ -3947,6 +3976,11 @@ class EnterpriseWebDashboard:
                     html_content = self.hackpilot.report_generator.export_report(report_data, 'html')
                     return Response(html_content, mimetype='text/html',
                                      headers={"Content-Disposition": f"attachment; filename={filename}.html"})
+
+                if fmt in ('markdown', 'md'):
+                    md_content = self.hackpilot.report_generator.export_report(report_data, 'markdown')
+                    return Response(md_content, mimetype='text/markdown',
+                                     headers={"Content-Disposition": f"attachment; filename={filename}.md"})
 
                 # pdf (default)
                 output_path = self.hackpilot.report_generator.export_report(report_data, 'pdf')

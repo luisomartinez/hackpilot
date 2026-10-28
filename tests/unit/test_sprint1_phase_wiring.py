@@ -120,6 +120,26 @@ def test_phase1_stops_launching_new_tools_once_session_is_cancelled():
     assert result["subdomains"] == []
 
 
+def test_phase1_skips_dns_subdomain_enumeration_for_an_ip_target():
+    """subfinder/amass enumerate subdomains of a *domain* - there is none
+    for a bare IP target, so running them would only burn their timeouts
+    (up to 900s for amass) for a guaranteed-empty result. nmap and whatweb
+    still run - a web service on an IP is just as real as one on a domain."""
+    tm = FakeToolManager({
+        "nmap": {"stdout": "80/tcp open http Apache\n"},
+        "whatweb": {"stdout": "http://203.0.113.10 [200 OK] nginx[1.18.0]\n"},
+    })
+    db = FakeDB()
+    result = _phases(tm, db, target="203.0.113.10").phase1_reconnaissance()
+
+    called_tools = {c[0] for c in tm.calls}
+    assert called_tools == {"nmap", "whatweb"}
+    assert result["subdomains"] == []
+    titles = {v["title"]: v for v in db.vulnerabilities}
+    assert "Technology detected: nginx 1.18.0" in titles
+    assert db.phase_results["phase-1"]["tools_used"] == ["nmap", "whatweb"]
+
+
 def test_phase1_recon_tool_failure_does_not_abort_the_phase():
     tm = FakeToolManager({"nmap": {"stdout": "80/tcp open http Apache\n"}, "subfinder": {"success": False}})
     db = FakeDB()
@@ -168,3 +188,29 @@ def test_phase3_skips_new_tools_without_web_service_like_nikto_does():
     phases.results["phase1_reconnaissance"] = {"open_ports": []}
     phases.phase3_vulnerability_assessment()
     assert not any(c[0] in ("nuclei", "testssl", "wapiti") for c in tm.calls)
+
+
+def test_phase3_runs_all_tools_against_a_bare_ip_target_same_as_a_domain():
+    """has_web_service is detected from open-port strings, not hostname
+    format - a web service on a bare IP must trigger the same nikto/
+    nuclei/testssl/wapiti run a domain target would."""
+    nuclei_line = json.dumps({
+        "template-id": "exposed-panel", "info": {"name": "Exposed Admin Panel", "severity": "high"},
+        "matched-at": "https://203.0.113.10/admin",
+    })
+    tm = FakeToolManager({
+        "nikto": {"stdout": "+ some finding\n"},
+        "nuclei": {"stdout": nuclei_line + "\n"},
+        "testssl": {"json_file": []},
+        "wapiti": {"json_file": {}},
+    })
+    db = FakeDB()
+    phases = _phases(tm, db, target="203.0.113.10")
+    phases.results["phase1_reconnaissance"] = {"open_ports": ["Port 443/tcp (https)"], "subdomains": []}
+    result = phases.phase3_vulnerability_assessment()
+
+    assert result["success"] is True
+    called_tools = {c[0] for c in tm.calls}
+    assert {"nikto", "nuclei", "testssl", "wapiti"} <= called_tools
+    titles = {v["title"] for v in db.vulnerabilities}
+    assert any("Exposed Admin Panel" in t for t in titles)
