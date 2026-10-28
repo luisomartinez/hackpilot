@@ -1,10 +1,13 @@
 # HackPilot core module
 """Pytest root config — stub heavy deps before hackpilot.py is imported."""
 
+import os
 import sys
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -115,5 +118,24 @@ for pkg, names in _internal.items():
     for sym in names:
         if not hasattr(mod, sym):
             setattr(mod, sym, MagicMock())
+
+
+# The real .env in this repo's lab (CONSOLE_AUTH_USER, ALLOWED_TARGETS,
+# ENABLE_*_PLUGIN, ...) gets loaded into this *process's* os.environ via
+# python-dotenv at import time (see advance_hackpilot.py's Config class),
+# same mechanism for every test in this file's process - not a per-test
+# leak. Confirmed flaky live: adding ENABLE_NIKTO_JSON_PLUGIN=true etc. to
+# .env for a real validation run made unrelated phase3 tests fail, because
+# they picked up those flags from the real environment instead of running
+# in isolation. Clear every lab-specific flag before each test; tests that
+# want one on set it explicitly via monkeypatch.setenv().
+_LAB_ENV_PREFIXES = ("ENABLE_", "ALLOWED_TARGETS", "CONSOLE_AUTH_", "CONSOLE_ALLOWED_IPS", "VULNERS_API_KEY", "WPSCAN_API_TOKEN")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_lab_env(monkeypatch):
+    for key in list(os.environ):
+        if key.startswith(_LAB_ENV_PREFIXES) or key in _LAB_ENV_PREFIXES:
+            monkeypatch.delenv(key, raising=False)
 
 
