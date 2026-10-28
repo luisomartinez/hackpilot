@@ -223,6 +223,24 @@ for tool in ffuf dirb seclists metasploit-framework; do
     install_tool "$tool"
 done
 
+# plugins/ tools (theharvester_plugin.py, wpscan_plugin.py, joomscan_plugin.py).
+# All disabled by default (ENABLE_<NAME>_PLUGIN unset) - installing the binary
+# does not turn anything on, same as metasploit-framework above.
+echo "[+] Installing plugin tools..."
+for tool in theharvester wpscan joomscan; do
+    install_tool "$tool"
+done
+
+# nmap's vulners NSE script (plugins/nmap_vulners_plugin.py) isn't bundled
+# with nmap itself - fetch it the same way nuclei-templates gets bundled at
+# build time above, rather than depend on a runtime download that's
+# already proven unreliable on this network for nuclei's own templates.
+echo "[+] Installing nmap vulners NSE script..."
+curl -fsSL -o /usr/share/nmap/scripts/vulners.nse \
+    https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse \
+    && nmap --script-updatedb >/dev/null 2>&1 \
+    || warn "Could not install nmap's vulners.nse - plugins/nmap_vulners_plugin.py will find nothing until it's installed manually"
+
 # Local-model provisioning is a user-controlled host action. Baking a daemon and a
 # multi-GB model download into the image build is non-deterministic and makes offline
 # image builds impossible. The Workbench remains usable in deterministic no-AI mode.

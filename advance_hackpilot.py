@@ -2914,6 +2914,7 @@ class EnterprisePentestingPhases:
         # tool is isolated in its own try/except so one failing doesn't
         # take out the others or the phase.
         subdomains: List[str] = []
+        tech_findings: List[Dict[str, Any]] = []
         if self.tool_manager and target:
             from exploitation.tools import run_subfinder, run_amass, run_whatweb
             from exploitation.findings_consolidator import consolidate
@@ -2929,6 +2930,12 @@ class EnterprisePentestingPhases:
                         raw_recon_findings.extend(runner(self.tool_manager, scan_host))
                     except Exception as e:
                         logger.warning("%s failed for %s: %s", runner.__name__, scan_host, e)
+
+            if not self._cancelled():
+                from plugins import run_phase_plugins
+                from plugins.base import PluginContext
+                plugin_ctx = PluginContext(tool_manager=self.tool_manager, target=target, scan_host=scan_host)
+                raw_recon_findings.extend(run_phase_plugins("reconnaissance", plugin_ctx))
 
             subdomain_findings = consolidate(raw_recon_findings)
             subdomains = [f["target"] for f in subdomain_findings]
@@ -3017,6 +3024,7 @@ class EnterprisePentestingPhases:
             "risk_score": 1.0 if open_ports else 0.0,
             "open_ports": open_ports,
             "subdomains": subdomains,
+            "tech_findings": tech_findings,
         }
         self.results["phase1_reconnaissance"] = result
         return result
@@ -3059,6 +3067,34 @@ class EnterprisePentestingPhases:
                         services.append(f"Port {match.group(1)} ({match.group(2)}){' - ' + banner if banner else ''}")
             else:
                 scan_error = (scan.get("stderr") or "").strip() or "nmap service scan failed or nmap is not installed"
+
+            if not self._cancelled():
+                from plugins import run_phase_plugins
+                from plugins.base import PluginContext
+                from exploitation.findings_consolidator import consolidate
+                plugin_ctx = PluginContext(tool_manager=self.tool_manager, target=target, scan_host=scan_host)
+                plugin_findings = consolidate(run_phase_plugins("scanning", plugin_ctx))
+                if self.db:
+                    from reporting.cvss_heuristics import estimate_cvss
+                    from reporting.evidence_store import save_evidence
+                    for finding in plugin_findings:
+                        cvss_vector, cvss_score = estimate_cvss(finding["title"], finding["severity"])
+                        finding_id = self.db.create_vulnerability(
+                            session_id=self.session_id,
+                            phase="scanning",
+                            severity=finding["severity"],
+                            title=finding["title"],
+                            description=f"Reported by: {', '.join(finding['sources'])}.",
+                            proof_of_concept=finding["target"],
+                            remediation="Review manually and confirm exploitability before prioritizing remediation.",
+                            cvss_score=cvss_score,
+                            cvss_vector=cvss_vector,
+                            sources=finding["sources"],
+                            validated=finding["validated"],
+                            confidence=finding["confidence"],
+                            evidence=finding["evidence"],
+                        )
+                        save_evidence(self.session_id, finding_id, finding)
         else:
             scan_error = "No target configured or tool manager unavailable"
 
@@ -3204,6 +3240,16 @@ class EnterprisePentestingPhases:
                     raw_vuln_findings.extend(run_wapiti(self.tool_manager, wapiti_target))
                 except Exception as e:
                     logger.warning("wapiti failed for %s: %s", wapiti_target, e)
+
+            if not self._cancelled():
+                from plugins import run_phase_plugins
+                from plugins.base import PluginContext
+                tech_findings = self.results.get("phase1_reconnaissance", {}).get("tech_findings", [])
+                plugin_ctx = PluginContext(
+                    tool_manager=self.tool_manager, target=target, scan_host=scan_host,
+                    subdomains=subdomains, has_web_service=has_web_service, tech_findings=tech_findings,
+                )
+                raw_vuln_findings.extend(run_phase_plugins("assessment", plugin_ctx))
 
             consolidated_vuln_findings = consolidate(raw_vuln_findings)
             if self.db:
@@ -3432,6 +3478,15 @@ class EnterprisePentestingPhases:
                 raw_exploit_findings.extend(run_ffuf_vhosts(self.tool_manager, scan_host))
             except Exception as e:
                 logger.warning("ffuf (vhosts) failed for %s: %s", scan_host, e)
+
+        # Same ALLOWED_TARGETS gate as everything else in this phase - we're
+        # already inside the branch that passed is_target_allowed(target)
+        # above, so plugins registered for "exploitation" inherit it too.
+        if not self._cancelled():
+            from plugins import run_phase_plugins
+            from plugins.base import PluginContext
+            plugin_ctx = PluginContext(tool_manager=self.tool_manager, target=target, scan_host=scan_host)
+            raw_exploit_findings.extend(run_phase_plugins("exploitation", plugin_ctx))
 
         consolidated_exploit_findings = consolidate(raw_exploit_findings)
         if self.db:

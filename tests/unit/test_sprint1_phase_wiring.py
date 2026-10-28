@@ -120,6 +120,37 @@ def test_phase1_stops_launching_new_tools_once_session_is_cancelled():
     assert result["subdomains"] == []
 
 
+def test_phase1_runs_an_enabled_plugin_and_persists_its_findings(monkeypatch):
+    """End-to-end: enabling a plugin via its own env var makes the real
+    phase1_reconnaissance method pick it up and persist its findings to
+    the DB through the same consolidate()/estimate_cvss() path as the
+    built-in subfinder/amass findings - not a separate, unverified path."""
+    monkeypatch.setenv("ENABLE_CRTSH_PLUGIN", "true")
+    monkeypatch.setenv("ENABLE_THEHARVESTER_PLUGIN", "false")
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{"name_value": "plugin-found.x.com"}]
+
+    class _FakeRequestsModule:
+        @staticmethod
+        def get(url, timeout=None):
+            return _FakeResp()
+
+    import sys
+    monkeypatch.setitem(sys.modules, "requests", _FakeRequestsModule())
+
+    tm = FakeToolManager({"nmap": {"stdout": "80/tcp open http Apache\n"}})
+    db = FakeDB()
+    _phases(tm, db).phase1_reconnaissance()
+
+    titles = {v["title"] for v in db.vulnerabilities}
+    assert "Subdomain discovered: plugin-found.x.com" in titles
+
+
 def test_phase1_skips_dns_subdomain_enumeration_for_an_ip_target():
     """subfinder/amass enumerate subdomains of a *domain* - there is none
     for a bare IP target, so running them would only burn their timeouts
