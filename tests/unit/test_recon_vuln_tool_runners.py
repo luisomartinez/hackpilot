@@ -60,7 +60,7 @@ def test_run_amass_parses_subdomains():
         "target": "dev.x.com",
         "source": "amass",
         "severity": "info",
-        "evidence": {"subdomain": "dev.x.com"},
+        "evidence": {"subdomain": "dev.x.com", "confirming_command": "amass enum -d x.com -timeout 20 -silent"},
     }]
 
 
@@ -91,7 +91,10 @@ def test_run_whatweb_strips_ansi_color_codes():
         "target": "http://x.com",
         "source": "whatweb",
         "severity": "info",
-        "evidence": {"url": "http://x.com", "name": "Apache", "version": "2.4.52"},
+        "evidence": {
+            "url": "http://x.com", "name": "Apache", "version": "2.4.52",
+            "confirming_command": "whatweb --color=never --aggression 3 x.com",
+        },
     }]
 
 

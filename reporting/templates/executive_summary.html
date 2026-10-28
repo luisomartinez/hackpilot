@@ -163,7 +163,7 @@
         <h3>{{ phase | capitalize }} ({{ findings|length }} finding{{ 's' if findings|length != 1 else '' }})</h3>
         <table>
             <tr>
-                <th>Severity</th><th>Title</th><th>CVSS</th><th>Sources</th><th>Validated</th><th>Evidence / Target</th>
+                <th>Severity</th><th>Title</th><th>CVSS</th><th>Sources</th><th>Validated</th><th>Evidence / Target</th><th>Confirming command</th>
             </tr>
             {% for f in findings %}
             <tr>
@@ -173,11 +173,32 @@
                 <td>{{ (f.sources or [])|join(', ') or '-' }}</td>
                 <td>{{ 'yes' if f.validated else 'no' }}</td>
                 <td class="poc-cell">{{ f.target }}</td>
+                <td class="poc-cell">{% if f.confirming_command %}<code>{{ f.confirming_command }}</code>{% else %}-{% endif %}</td>
             </tr>
             {% endfor %}
         </table>
     </div>
     {% endfor %}
+    {% endif %}
+
+    {% if remediation_priorities %}
+    <h2>Remediation Priorities</h2>
+    <p style="color:#5f6368;">Actionable findings only (severity above info), ordered critical &rarr; low, for whoever owns fixing things.</p>
+    <div class="findings-section">
+        <table>
+            <tr><th>Severity</th><th>Finding</th><th>Target / Parameter</th><th>CVSS</th><th>Confirming command</th><th>Remediation</th></tr>
+            {% for item in remediation_priorities %}
+            <tr>
+                <td><span class="sev-badge sev-{{ (item.severity or 'info')|lower }}">{{ item.severity }}</span></td>
+                <td>{{ item.title }}</td>
+                <td class="poc-cell">{{ item.target }}</td>
+                <td>{{ item.cvss_score if item.cvss_score is not none else '-' }}</td>
+                <td class="poc-cell">{% if item.confirming_command %}<code>{{ item.confirming_command }}</code>{% else %}-{% endif %}</td>
+                <td>{{ item.remediation }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
     {% endif %}
 
     {% if annexes %}

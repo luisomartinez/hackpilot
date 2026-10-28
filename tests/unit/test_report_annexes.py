@@ -8,7 +8,7 @@ import logging
 
 from jinja2 import DictLoader, Environment
 
-from reporting.dynamic_reports import DynamicReportGenerator
+from reporting.dynamic_reports import DynamicReportGenerator, _confirming_command_for
 
 
 def _bare_generator():
@@ -29,7 +29,13 @@ SESSIONS = [{
             "title": "SQL Injection confirmed",
             "phase": "exploitation",
             "severity": "critical",
-            "evidence": {"sqlmap": {"raw_excerpt": "Parameter: id (GET)\nis vulnerable"}},
+            "target": "https://x.com/item?id=1",
+            "cvss_score": 9.8,
+            "remediation": "Use parameterized queries; validate and sanitize the 'id' parameter.",
+            "evidence": {"sqlmap": {
+                "raw_excerpt": "Parameter: id (GET)\nis vulnerable",
+                "confirming_command": "sqlmap -u https://x.com/item?id=1 --batch --level=5 --risk=3 --dbs",
+            }},
         },
     ],
     "phase_results": [
@@ -127,3 +133,80 @@ def test_executive_summary_template_renders_phase_detail_and_full_findings():
     assert "sqlmap -u https://x.com --batch --dbs" in html
     assert "SQL Injection confirmed" in html
     assert "Subdomain discovered: api.x.com" in html
+
+
+def test_confirming_command_for_reads_the_first_source_that_has_one():
+    vuln = {"evidence": {
+        "subfinder": {"subdomain": "api.x.com"},
+        "amass": {"subdomain": "api.x.com", "confirming_command": "amass enum -d x.com -timeout 20 -silent"},
+    }}
+    assert _confirming_command_for(vuln) == "amass enum -d x.com -timeout 20 -silent"
+    assert _confirming_command_for({"evidence": {}}) == ""
+    assert _confirming_command_for({}) == ""
+
+
+def test_build_remediation_priorities_excludes_info_and_sorts_by_severity():
+    gen = _bare_generator()
+    vulns = [v for s in SESSIONS for v in s["vulnerabilities"]]
+    priorities = gen._build_remediation_priorities(vulns)
+
+    # Both "Subdomain discovered" entries are info severity - not actionable.
+    assert len(priorities) == 1
+    item = priorities[0]
+    assert item["title"] == "SQL Injection confirmed"
+    assert item["severity"] == "critical"
+    assert item["target"] == "https://x.com/item?id=1"
+    assert item["cvss_score"] == 9.8
+    assert item["confirming_command"] == "sqlmap -u https://x.com/item?id=1 --batch --level=5 --risk=3 --dbs"
+    assert "parameterized queries" in item["remediation"]
+
+
+def test_executive_summary_template_renders_remediation_and_confirming_command():
+    gen = _bare_generator()
+    gen.jinja_env = Environment(loader=DictLoader({
+        "executive_summary.html": open(
+            "reporting/templates/executive_summary.html", encoding="utf-8"
+        ).read()
+    }))
+    vulns = [v for s in SESSIONS for v in s["vulnerabilities"]]
+    report_data = {
+        "title": "Test Report",
+        "generated_at": "2026-01-01",
+        "target": "x.com",
+        "metrics": {"total_vulnerabilities": 3, "critical_count": 1, "high_count": 0, "overall_risk_score": 5.0},
+        "charts": {},
+        "key_findings": [],
+        "recommendations": [],
+        "annexes": gen._build_annexes(SESSIONS),
+        "phase_detail": gen._build_phase_detail(SESSIONS),
+        "findings_by_phase": gen._group_findings_by_phase(vulns),
+        "remediation_priorities": gen._build_remediation_priorities(vulns),
+    }
+    html = gen._export_html_report(report_data)
+
+    assert "Remediation Priorities" in html
+    assert "sqlmap -u https://x.com/item?id=1 --batch --level=5 --risk=3 --dbs" in html
+    assert "parameterized queries" in html
+
+
+def test_markdown_export_contains_all_four_required_sections():
+    gen = _bare_generator()
+    vulns = [v for s in SESSIONS for v in s["vulnerabilities"]]
+    report_data = {
+        "title": "Test Report",
+        "generated_at": "2026-01-01",
+        "target": "x.com",
+        "metrics": {"total_vulnerabilities": 3, "critical_count": 1, "high_count": 0,
+                     "medium_count": 0, "low_count": 0, "overall_risk_score": 5.0},
+        "phase_detail": gen._build_phase_detail(SESSIONS),
+        "findings_by_phase": gen._group_findings_by_phase(vulns),
+        "remediation_priorities": gen._build_remediation_priorities(vulns),
+    }
+    md = gen._export_markdown_report(report_data)
+
+    assert "## Executive Summary" in md
+    assert "## Findings Detail, by Phase" in md
+    assert "## Tooling & Methodology" in md
+    assert "## Remediation Priorities" in md
+    assert "sqlmap -u https://x.com/item?id=1 --batch --level=5 --risk=3 --dbs" in md
+    assert "nmap -F -Pn x.com" in md

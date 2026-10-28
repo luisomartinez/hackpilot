@@ -24,6 +24,17 @@ from jinja2 import Environment, FileSystemLoader, Template, TemplateNotFound
 from database import get_db_manager
 
 
+def _confirming_command_for(vuln: Dict[str, Any]) -> str:
+    """The exact command that confirmed this finding, if the runner that
+    found it recorded one (exploitation.tools.* runners attach
+    'confirming_command' into each raw finding's evidence; consolidation
+    keys evidence by source name, so this just needs the first match)."""
+    for payload in (vuln.get("evidence") or {}).values():
+        if isinstance(payload, dict) and payload.get("confirming_command"):
+            return payload["confirming_command"]
+    return ""
+
+
 @dataclass
 class ReportTemplate:
     name: str
@@ -558,6 +569,7 @@ class DynamicReportGenerator:
             "annexes": self._build_annexes(sessions),
             "phase_detail": self._build_phase_detail(sessions),
             "findings_by_phase": self._group_findings_by_phase(all_vulnerabilities),
+            "remediation_priorities": self._build_remediation_priorities(all_vulnerabilities),
             "attack_chain_narrative": next(
                 (s["attack_chain_narrative"] for s in sessions if s.get("attack_chain_narrative")),
                 None,
@@ -599,10 +611,33 @@ class DynamicReportGenerator:
         severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         for vuln in vulnerabilities:
             phase = vuln.get("phase") or "unknown"
-            by_phase.setdefault(phase, []).append(vuln)
+            by_phase.setdefault(phase, []).append({**vuln, "confirming_command": _confirming_command_for(vuln)})
         for findings in by_phase.values():
             findings.sort(key=lambda v: severity_rank.get(str(v.get("severity", "info")).lower(), 5))
         return by_phase
+
+    def _build_remediation_priorities(
+        self, vulnerabilities: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Every *actionable* finding (severity above 'info'), flattened
+        across phases and sorted by severity - the "Remediation
+        Priorities" section callers can hand straight to whoever owns
+        fixing things, without them having to re-derive priority order
+        from the full per-phase findings tables."""
+        severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        actionable = [
+            v for v in vulnerabilities
+            if str(v.get("severity", "info")).lower() in severity_rank
+        ]
+        actionable.sort(key=lambda v: severity_rank.get(str(v.get("severity", "info")).lower(), 9))
+        return [{
+            "title": v.get("title"),
+            "severity": v.get("severity"),
+            "target": v.get("target"),
+            "cvss_score": v.get("cvss_score"),
+            "remediation": v.get("remediation") or "Review manually and confirm exploitability before prioritizing.",
+            "confirming_command": _confirming_command_for(v),
+        } for v in actionable]
 
     def _build_annexes(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Annex data for the report template: discovered subdomains and raw
@@ -853,8 +888,79 @@ class DynamicReportGenerator:
             return self._export_pdf_report(report_data)
         elif format_type.lower() == "json":
             return json.dumps(report_data, indent=2, default=str)
+        elif format_type.lower() in ("markdown", "md"):
+            return self._export_markdown_report(report_data)
         else:
             raise ValueError(f"Unsupported format: {format_type}")
+
+    def _export_markdown_report(self, report_data: Dict[str, Any]) -> str:
+        """Export report as Markdown: the same four sections as the HTML/PDF
+        report (executive summary, findings detail, tooling & methodology,
+        remediation priorities), as plain text for pasting into a ticket,
+        chat, or wiki page rather than opening a PDF viewer."""
+        metrics = report_data.get("metrics", {})
+        lines = [
+            f"# {report_data.get('title', 'Security Assessment Report')}",
+            "",
+            f"**Generated:** {report_data.get('generated_at', '')}  ",
+            f"**Target:** {report_data.get('target', '')}",
+            "",
+            "## Executive Summary",
+            "",
+            f"- Total findings: {metrics.get('total_vulnerabilities', 0)}",
+            f"- Critical: {metrics.get('critical_count', 0)} | High: {metrics.get('high_count', 0)} "
+            f"| Medium: {metrics.get('medium_count', 0)} | Low: {metrics.get('low_count', 0)}",
+            f"- Overall risk score: {metrics.get('overall_risk_score', 0)}/10",
+            "",
+        ]
+
+        remediation = report_data.get("remediation_priorities") or []
+        lines.append("## Remediation Priorities")
+        lines.append("")
+        if remediation:
+            lines.append("| Severity | Finding | Target | CVSS | Confirming command |")
+            lines.append("|---|---|---|---|---|")
+            for item in remediation:
+                cmd = f"`{item['confirming_command']}`" if item.get("confirming_command") else "-"
+                lines.append(
+                    f"| {item.get('severity', '')} | {item.get('title', '')} | "
+                    f"{item.get('target', '')} | {item.get('cvss_score', '-')} | {cmd} |"
+                )
+        else:
+            lines.append("No actionable (above-info) findings in this session.")
+        lines.append("")
+
+        lines.append("## Findings Detail, by Phase")
+        lines.append("")
+        for phase, findings in (report_data.get("findings_by_phase") or {}).items():
+            lines.append(f"### {phase.capitalize()} ({len(findings)} finding(s))")
+            lines.append("")
+            for f in findings:
+                cvss_suffix = f", CVSS {f['cvss_score']}" if f.get("cvss_score") else ""
+                lines.append(f"**{f.get('title', '')}** - severity: {f.get('severity', '')}{cvss_suffix}")
+                if f.get("target"):
+                    lines.append(f"- Target/parameter: `{f['target']}`")
+                if f.get("confirming_command"):
+                    lines.append(f"- Confirming command: `{f['confirming_command']}`")
+                if f.get("sources"):
+                    lines.append(f"- Sources: {', '.join(f['sources'])}")
+                lines.append("")
+
+        lines.append("## Tooling & Methodology")
+        lines.append("")
+        for phase in report_data.get("phase_detail") or []:
+            lines.append(f"### {phase.get('phase_name', '')} ({phase.get('status', '')})")
+            lines.append("")
+            if phase.get("tools_used"):
+                lines.append(f"Tools: {', '.join(phase['tools_used'])}")
+                lines.append("")
+            for cmd in phase.get("commands_used") or []:
+                lines.append(f"```\n{cmd}\n```")
+            if phase.get("ai_analysis"):
+                lines.append(f"\n{phase['ai_analysis']}")
+            lines.append("")
+
+        return "\n".join(lines)
 
     def _export_html_report(self, report_data: Dict[str, Any]) -> str:
         """Export report as HTML"""
@@ -871,6 +977,7 @@ class DynamicReportGenerator:
                 annexes=report_data.get("annexes", {}),
                 phase_detail=report_data.get("phase_detail", []),
                 findings_by_phase=report_data.get("findings_by_phase", {}),
+                remediation_priorities=report_data.get("remediation_priorities", []),
                 attack_chain_narrative=report_data.get("attack_chain_narrative"),
             )
         except Exception as e:
